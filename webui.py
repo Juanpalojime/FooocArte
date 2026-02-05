@@ -104,7 +104,7 @@ def generate_clicked(task: worker.AsyncTask):
     if not fooocarte.state.can_start():
         status_view = get_batch_status_view()
         yield gr.update(visible=True, value=f"<div style='color: red; font-weight: bold;'>Error: El sistema ya está en estado {fooocarte.state.state.value}</div>"), \
-              gr.update(), gr.update(), gr.update(), gr.update(), gr.update(interactive=True), status_view
+              gr.update(), gr.update(), gr.update(), gr.update(interactive=True), status_view, gr.update(), gr.update()
         return
     
     # UX-02: Immediate State Visibility
@@ -116,9 +116,10 @@ def generate_clicked(task: worker.AsyncTask):
         gr.update(visible=True, value=None), \
         gr.update(visible=False, value=None), \
         gr.update(visible=False), \
-        gr.update(visible=False), \
         gr.update(interactive=False), \
-        status_view
+        status_view, \
+        gr.update(visible=True), \
+        gr.update(visible=True)
 
     worker.async_tasks.append(task)
 
@@ -139,13 +140,19 @@ def generate_clicked(task: worker.AsyncTask):
                     gr.update(visible=True, value=image) if image is not None else gr.update(), \
                     gr.update(), \
                     gr.update(visible=False), \
-                    gr.update(visible=False)
+                    gr.update(), \
+                    get_batch_status_view(), \
+                    gr.update(), \
+                    gr.update()
             if flag == 'results':
                 yield gr.update(visible=True), \
                     gr.update(visible=True), \
                     gr.update(visible=True, value=product), \
                     gr.update(visible=False), \
-                    gr.update(visible=False)
+                    gr.update(), \
+                    get_batch_status_view(), \
+                    gr.update(), \
+                    gr.update()
             if flag == 'finish':
                 if not args_manager.args.disable_enhance_output_sorting:
                     product = sort_enhance_images(product, task)
@@ -164,9 +171,10 @@ def generate_clicked(task: worker.AsyncTask):
                     gr.update(visible=False), \
                     gr.update(visible=False), \
                     gr.update(visible=True, value=product), \
-                    gr.update(visible=False), \
                     gr.update(interactive=True), \
-                    get_batch_status_view()
+                    get_batch_status_view(), \
+                    gr.update(visible=False), \
+                    gr.update(visible=False)
                 finished = True
 
                 # delete Fooocus temp images, only keep gradio temp images
@@ -1358,13 +1366,13 @@ with shared.gradio_root:
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
 
-        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True),
-                              outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating]) \
+        generate_button.click(lambda: (gr.update(visible=True), gr.update(visible=False), gr.update(visible=False, interactive=False), [], True),
+                              outputs=[cancel_header_btn, pause_header_btn, generate_button, gallery, state_is_generating]) \
             .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
             .then(fn=get_task, inputs=ctrls, outputs=currentTask) \
-            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery, generate_button, batch_status_html]) \
-            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False),
-                  outputs=[generate_button, stop_button, skip_button, state_is_generating]) \
+            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery, generate_button, batch_status_html, cancel_header_btn, pause_header_btn]) \
+            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False), gr.update(visible=False), False),
+                  outputs=[generate_button, cancel_header_btn, pause_header_btn, state_is_generating]) \
             .then(fn=update_history_link, outputs=history_link) \
             .then(fn=lambda: None, _js='playNotification').then(fn=lambda: None, _js='refresh_grid_delayed')
 
@@ -1372,7 +1380,7 @@ with shared.gradio_root:
                                    [gr.update(visible=False)] * 6 +
                                    [gr.update(visible=True, value=[])],
                            outputs=[currentTask, state_is_generating, generate_button,
-                                    reset_button, stop_button, skip_button,
+                                    reset_button, cancel_header_btn, pause_header_btn,
                                     progress_html, progress_window, progress_gallery, gallery],
                            queue=False)
 
