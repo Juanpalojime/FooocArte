@@ -1443,28 +1443,7 @@ with shared.gradio_root:
                 .then(fn=style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False) \
                 .then(lambda: None, _js='()=>{refresh_style_localization();}')
 
-        # FooocArte: Global UI Synchronizer (1s Polling)
-        engine_timer = gr.Timer(value=1.5, active=True)
-        engine_timer.tick(
-            fn=refresh_engine_ui, 
-            outputs=[
-                batch_status_html,
-                generate_button,
-                cancel_header_btn,
-                pause_header_btn,
-                resume_header_btn,
-                reset_engine_button,
-                generation_mode,
-                batch_size,
-                prompt,
-                recovery_panel,
-                audit_log_display,
-                system_info_display,
-                batch_inspector_html
-            ],
-            show_progress=False,
-            queue=False
-        )
+        # FooocArte: Polling removed for Gradio 3 compatibility (UX handled via Event yields)
 
 def dump_default_english_config():
     from modules.localization import dump_english_config
