@@ -40,6 +40,31 @@ class PersistenceManager:
     def save_config(self, config: Dict[str, Any]):
         self._atomic_write(self.config_path, config)
 
+    def has_recovery_data(self) -> bool:
+        """Check if there is valid recovery data from an interrupted session."""
+        if not os.path.exists(self.state_path):
+            return False
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("state") not in [GlobalState.IDLE.value, None]
+        except:
+            return False
+
+    def load_recovery_data(self) -> Optional[Dict[str, Any]]:
+        """Load recovery data from disk."""
+        if not self.has_recovery_data():
+            return None
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return None
+
+    def load_previous_session(self) -> Optional[Dict[str, Any]]:
+        """Alias for load_recovery_data for compatibility."""
+        return self.load_recovery_data()
+
     def _atomic_write(self, path: str, data: Any):
         temp_path = path + ".tmp"
         try:
