@@ -30,6 +30,30 @@ def get_task(*args):
 
     return worker.AsyncTask(args=args)
 
+def make_batch_status_html(estado, current, total, queue_length):
+    """Generate color-coded HTML for batch status header"""
+    color_map = {
+        "INACTIVO": "#6B7280", "PREPARANDO": "#3B82F6", "EJECUTANDO": "#3B82F6",
+        "EN_PAUSA": "#F59E0B", "CANCELANDO": "#F97316", 
+        "COMPLETADO": "#10B981", "ERROR": "#EF4444"
+    }
+    estado_es = {
+        "INACTIVO": "Inactivo", "PREPARANDO": "Preparando", "EJECUTANDO": "Ejecutando",
+        "EN_PAUSA": "En Pausa", "CANCELANDO": "Cancelando",
+        "COMPLETADO": "Completado", "ERROR": "Error"
+    }
+    color = color_map.get(estado, "#6B7280")
+    estado_texto = estado_es.get(estado, estado)
+    progress_html = f"{current}/{total}" if total > 0 else "—"
+    queue_html = f"Cola: {queue_length}" if queue_length > 0 else ""
+    
+    return f"""<div style="padding: 12px; background: {color}; color: white; border-radius: 8px; font-weight: bold; text-align: center;">
+        <span style="font-size: 16px;">🔄 Estado: {estado_texto}</span>
+        <span style="margin-left: 20px;">📊 Progreso: {progress_html}</span>
+        {f'<span style="margin-left: 20px;">📋 {queue_html}</span>' if queue_html else ''}
+    </div>"""
+
+
 def generate_clicked(task: worker.AsyncTask):
     import ldm_patched.modules.model_management as model_management
 
