@@ -3,6 +3,8 @@ import threading
 from extras.inpaint_mask import generate_mask_from_image, SAMOptions
 from modules.patch import PatchSettings, patch_settings, patch_all
 import modules.config
+import modules.fooocarte_core as fooocarte
+
 
 patch_all()
 
@@ -1069,6 +1071,13 @@ def worker():
     @torch.no_grad()
     @torch.inference_mode()
     def handler(async_task: AsyncTask):
+        # COMMIT 2: Start Global State lifecycle
+        if not fooocarte.state.can_start():
+            print("[FooocArte] State Machine rejects start: System is not IDLE")
+            return
+            
+        fooocarte.state.start_generation({'task_id': getattr(async_task, 'current_tab', 'default')})
+        
         preparation_start_time = time.perf_counter()
         async_task.processing = True
 
@@ -1262,12 +1271,25 @@ def worker():
 
         async_task.yields.append(['preview', (current_progress, 'Moving model to GPU ...', None)])
 
+        # COMMIT 2: Transition to RUNNING state
+        fooocarte.state.mark_ready()
+        
         processing_start_time = time.perf_counter()
 
         preparation_steps = current_progress
         total_count = async_task.image_number
 
         def callback(step, x0, x, total_steps, y):
+            # COMMIT 2: Pause and Cancel logic
+            while fooocarte.state.is_paused():
+                time.sleep(0.5)
+                if fooocarte.state.state == fooocarte.GlobalState.CANCELLING:
+                    break
+            
+            if fooocarte.state.state == fooocarte.GlobalState.CANCELLING:
+                # model_management.interrupt_current_processing(True) is already called by state transition
+                pass
+
             if step == 0:
                 async_task.callback_steps = 0
             async_task.callback_steps += (100 - preparation_steps) / float(all_steps)
@@ -1459,6 +1481,10 @@ def worker():
             enhancement_image_time = time.perf_counter() - enhancement_image_start_time
             print(f'Enhancement image time: {enhancement_image_time:.2f} seconds')
 
+        # COMMIT 2: Mark lifecycle as COMPLETED
+        fooocarte.state.complete()
+        fooocarte.state.reset()
+        
         stop_processing(async_task, processing_start_time)
         return
 
@@ -1473,7 +1499,11 @@ def worker():
                     build_image_wall(task)
                 task.yields.append(['finish', task.results])
                 pipeline.prepare_text_encoder(async_call=True)
-            except:
+            except Exception as e:
+                # COMMIT 2: Mark lifecycle as ERROR
+                fooocarte.state.error(str(e))
+                fooocarte.state.reset()
+                
                 traceback.print_exc()
                 task.yields.append(['finish', task.results])
             finally:

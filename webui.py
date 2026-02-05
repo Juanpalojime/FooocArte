@@ -13,6 +13,7 @@ import modules.flags as flags
 import modules.gradio_hijack as grh
 import modules.style_sorter as style_sorter
 import modules.meta_parser
+import modules.fooocarte_core as fooocarte
 import args_manager
 import copy
 import launch
@@ -62,6 +63,13 @@ def generate_clicked(task: worker.AsyncTask):
     # outputs=[progress_html, progress_window, progress_gallery, gallery]
 
     if len(task.args) == 0:
+        return
+
+    # COMMIT 2: Check global state before starting
+    if not fooocarte.state.can_start():
+        status_html = fooocarte. PRINCIPLES # Reusing principles as error or just simple message
+        yield gr.update(visible=True, value=f"<div style='color: red; font-weight: bold;'>Error: El sistema ya está en estado {fooocarte.state.state.value}</div>"), \
+              gr.update(), gr.update(), gr.update(), gr.update()
         return
 
     execution_start_time = time.perf_counter()
