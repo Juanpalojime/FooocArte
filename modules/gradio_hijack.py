@@ -18,8 +18,8 @@ from gradio_client.serializing import ImgSerializable
 from PIL import Image as _Image  # using _ to minimize namespace pollution
 
 from gradio import processing_utils, utils, Error
-from gradio.components.base import Component, _Keywords, Block
-
+from gradio.components.base import IOComponent, _Keywords, Block
+from gradio.deprecation import warn_style_method_deprecation
 from gradio.events import (
     Changeable,
     Clearable,
@@ -43,7 +43,7 @@ class Image(
     Streamable,
     Selectable,
     Uploadable,
-    Component,
+    IOComponent,
     ImgSerializable,
     TokenInterpretable,
 ):
@@ -158,7 +158,7 @@ class Image(
             if show_share_button is None
             else show_share_button
         )
-        Component.__init__(
+        IOComponent.__init__(
             self,
             label=label,
             every=every,
@@ -192,7 +192,7 @@ class Image(
             "selectable": self.selectable,
             "show_share_button": self.show_share_button,
             "show_download_button": self.show_download_button,
-            **Component.get_config(self),
+            **IOComponent.get_config(self),
         }
 
     @staticmethod
