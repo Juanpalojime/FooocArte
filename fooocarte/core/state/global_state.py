@@ -55,6 +55,11 @@ class GlobalStateMachine:
     def batch_total(self) -> int:
         return self._batch_total
 
+    @batch_total.setter
+    def batch_total(self, value: int):
+        with self._lock:
+            self._batch_total = value
+
     @property
     def valid_images(self) -> int:
         return self._valid_images

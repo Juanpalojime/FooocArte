@@ -30,7 +30,7 @@ def get_task(*args):
 
     return worker.AsyncTask(args=args)
 
-def make_batch_status_html(estado, current, total, queue_length):
+def make_batch_status_html(estado, current, total, queue_length, approved=0, rejected=0):
     """Generate color-coded HTML for batch status header"""
     color_map = {
         "INACTIVO": "#6B7280", "PREPARANDO": "#3B82F6", "EJECUTANDO": "#3B82F6",

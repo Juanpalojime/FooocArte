@@ -26,7 +26,7 @@ from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
 
-def make_batch_status_html(state_name, current, total, approved=0):
+def make_fooocarte_batch_status_html(state_name, current, total, approved=0, rejected=0):
     # Professional Dark Accents
     colors = {
         "IDLE": "#059669",      # Emerald 600
@@ -45,7 +45,7 @@ def make_batch_status_html(state_name, current, total, approved=0):
     <div style="display: flex; align-items: center; justify-content: space-between; background: #111827; color: #f3f4f6; padding: 12px 24px; border-radius: 12px; border-left: 6px solid {accent_color}; border-right: 1px solid #374151; border-top: 1px solid #374151; border-bottom: 1px solid #374151; font-family: 'Inter', sans-serif; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
         <div style="flex: 1;"><span style="color: #9ca3af; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em;">Status</span><br/><span style="color: {accent_color}; font-weight: 800; font-size: 1.1em;">● {state_name}</span></div>
         <div style="flex: 1; text-align: center; border-left: 1px solid #374151; border-right: 1px solid #374151;"><span style="color: #9ca3af; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em;">Progreso</span><br/><b>{progress_text}</b></div>
-        <div style="flex: 1; text-align: right;"><span style="color: #9ca3af; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em;">Aprobadas</span><br/><b style="color: #10b981;">{approved}</b></div>
+        <div style="flex: 1; text-align: right; padding-left: 10px;"><span style="color: #10b981; font-size: 0.75em; text-transform: uppercase;">OK: {approved}</span><br/><span style="color: #ef4444; font-size: 0.75em; text-transform: uppercase;">ERR: {rejected}</span></div>
     </div>
     """
 
@@ -54,9 +54,10 @@ def get_task(*args):
     args.pop(0)
 
     # Defensive fix for Performance enum (v1.0 God Mode Stability)
-    # The performance selection is at index 9 after sidebar reordering
-    if len(args) > 9 and not isinstance(args[9], str):
-        args[9] = "Quality"
+    # Sidebar reordering + drive_path shift: performance_selection is now at index 10
+    # [drive_toggle, drive_path, clip_threshold, clip_toggle, batch_size, generation_mode, grid, prompt, neg, style, perf]
+    if len(args) > 10 and not isinstance(args[10], str):
+        args[10] = "Quality"
 
     return worker.AsyncTask(args=args)
 
@@ -65,11 +66,14 @@ def get_task(*args):
 def get_batch_status_view():
     """Helper to generate the current batch status HTML view"""
     status = fooocarte.state.batch_status
-    return make_batch_status_html(
-        status['state'], 
-        status['current'], 
-        status['total'], 
-        approved=fooocarte.state.valid_images
+    current = status.get('current', 0)
+    valid = status.get('valid', 0)
+    return make_fooocarte_batch_status_html(
+        status.get('state', 'IDLE'), 
+        current, 
+        status.get('total', 0), 
+        approved=valid,
+        rejected=max(0, current - valid)
     )
 
 
@@ -140,15 +144,9 @@ def generate_clicked(task: worker.AsyncTask):
                 if not args_manager.args.disable_enhance_output_sorting:
                     product = sort_enhance_images(product, task)
 
-                # COMMIT 2: Use global settings from sidebar
-                if task.generation_mode == "Batch":
-                    fooocarte.state.total = task.batch_size_config
-                else:
-                    fooocarte.state.total = 1
-                
-                # Update CLIP threshold if needed
-                if hasattr(fooocarte, 'engine') and hasattr(fooocarte.engine, 'clip_filter'):
-                    fooocarte.engine.clip_filter.threshold = task.clip_threshold
+                # Final Sync before completion
+                fooocarte.state.batch_total = task.batch_size_config if task.generation_mode == "Batch" else 1
+                fooocarte.state.clip_threshold = task.clip_threshold if task.clip_toggle else 0.0
 
                 yield gr.update(visible=False), \
                     gr.update(visible=False), \
@@ -236,10 +234,37 @@ css = """
 .batch_inspector_card { background: #1f2937; padding: 24px; border-radius: 12px; border: 1px solid #374151; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 .quality_card, .persistence_card { background: #1f2937; padding: 20px; border-radius: 12px; border: 1px solid #374151; margin-top: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
 .status_idle { color: #81C784; font-weight: bold; }
-.status_running { color: #64B5F6; font-weight: bold; }
+.status_running { color: #9C27B0; font-weight: bold; }
 .status_paused { color: #FFB74D; font-weight: bold; }
 .status_error { color: #E57373; font-weight: bold; }
-#generate_button { height: 64px !important; font-size: 1.25em !important; font-weight: 800 !important; margin-top: 24px !important; border-radius: 12px !important; background: #1d4ed8 !important; color: white !important; }
+
+/* 🟣 Purple Accents & Generate Button */
+#generate_button { 
+    height: 64px !important; 
+    font-size: 1.25em !important; 
+    font-weight: 800 !important; 
+    margin-top: 24px !important; 
+    border-radius: 12px !important; 
+    background: linear-gradient(135deg, #9333ea, #7e22ce) !important; 
+    color: white !important;
+    border: none !important;
+    box-shadow: 0 4px 15px rgba(147, 51, 234, 0.3) !important;
+}
+#generate_button:hover {
+    background: linear-gradient(135deg, #a855f7, #9333ea) !important;
+    box-shadow: 0 6px 20px rgba(147, 51, 234, 0.4) !important;
+}
+
+/* 🟣 Slider Handles (Circles) to Purple */
+input[type=range]::-webkit-slider-thumb {
+    background: #9333ea !important;
+}
+input[type=range]::-moz-range-thumb {
+    background: #9333ea !important;
+}
+.range-slider::-webkit-slider-thumb {
+    background: #9333ea !important;
+}
 
 /* 🏅 Gallery Quality Badges (Harmonized Dark) */
 .image_gallery .caption-label { 
@@ -269,9 +294,19 @@ css = """
 theme_path = os.path.join(os.getcwd(), 'simci_css', 'themes', 'theme_schema@0.0.2.json')
 try:
     fooocarte_theme = gr.Theme.load(theme_path)
+    # Customize tokens for Purple Accents
+    fooocarte_theme.set(
+        button_primary_background_fill="#9333ea",
+        button_primary_background_fill_hover="#a855f7",
+        button_primary_border_color="#9333ea",
+        slider_color="#9333ea",
+        checkbox_background_color_selected="#9333ea",
+        checkbox_border_color_selected="#9333ea",
+        radio_circle_color="#9333ea"
+    )
 except Exception as e:
-    print(f"Theme load failed: {e}. Falling back to default.")
-    fooocarte_theme = gr.themes.Soft()
+    print(f"Theme load failed: {e}. Falling back to purpleized Soft.")
+    fooocarte_theme = gr.themes.Soft(primary_hue="purple")
 
 shared.gradio_root = gr.Blocks(title=title, css=css, theme=fooocarte_theme).queue()
 
@@ -332,7 +367,7 @@ with shared.gradio_root:
             with gr.Column(elem_classes="persistence_card"):
                 gr.Markdown("### 💾 4. Persistence")
                 drive_toggle = gr.Checkbox(label="Save to Drive", value=True, elem_id="drive_toggle")
-                gr.Textbox(label="Path Storage", value="/content/drive/MyDrive/FooocArte", interactive=False)
+                drive_path = gr.Textbox(label="Path Storage", value="/content/drive/MyDrive/FooocArte", interactive=False, elem_id="drive_path")
 
             with gr.Column(visible=False, elem_id="recovery_panel") as recovery_panel:
                 gr.Markdown("⚠️ **Batch incompleto detectado**")
@@ -350,6 +385,16 @@ with shared.gradio_root:
                 outputs=batch_settings_panel,
                 queue=False
             )
+
+            # Sidebar -> Engine Real-time Sync
+            def sidebar_sync(drive_t, drive_p, clip_h, clip_c, batch, mode):
+                fooocarte.state.clip_threshold = clip_h if clip_c else 0.0
+                fooocarte.state.batch_total = int(batch) if mode == "Batch" else 1
+                return get_batch_status_view()
+
+            sidebar_ctrls = [drive_toggle, drive_path, clip_threshold, clip_toggle, batch_size, generation_mode]
+            for c in sidebar_ctrls:
+                c.change(fn=sidebar_sync, inputs=sidebar_ctrls, outputs=[batch_status_html], queue=False, show_progress=False)
 
         # 🧱 MAIN WORKSPACE
         with gr.Column(scale=3, elem_classes="workspace_panel"):
@@ -467,14 +512,21 @@ with shared.gradio_root:
                     def make_batch_inspector_html(status):
                         batch_id = status.get('batch_id', 'N/A')
                         state = status.get('state', 'IDLE')
-                        approved = status.get('approved', 0)
-                        total = status.get('total', 0)
+                        valid = status.get('valid', 0)
+                        current = status.get('current', 0)
+                        total = status.get('total', 1)
+                        rejected = max(0, current - valid)
+                        
                         return f"""
-                        <div class="batch_inspector_card">
-                            <div style="margin-bottom: 8px;"><b>Batch ID:</b> {batch_id}</div>
-                            <div style="margin-bottom: 8px;"><b>State:</b> {state}</div>
-                            <div style="margin-bottom: 8px;"><b>Progress:</b> {approved} / {total} (appr)</div>
-                            <div style="font-size: 0.8em; color: #666; margin-top: 12px;">Engine: FooocArte v1.0</div>
+                        <div class="batch_inspector_card" style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+                            <div style="margin-bottom: 8px;"><b>Batch ID:</b> <span style="color: #60A5FA;">{batch_id}</span></div>
+                            <div style="margin-bottom: 8px;"><b>State:</b> <span style="color: #FBBF24;">{state}</span></div>
+                            <div style="margin-bottom: 8px;"><b>Progress:</b> {current} / {total}</div>
+                            <div style="display: flex; gap: 10px; margin-top: 12px;">
+                                <div style="color: #34D399;">✔ OK: {valid}</div>
+                                <div style="color: #F87171;">✖ ERR: {rejected}</div>
+                            </div>
+                            <div style="font-size: 0.8em; color: #666; margin-top: 12px; text-align: right;">FooocArte v1.0 Gold</div>
                         </div>
                         """
 
@@ -1298,7 +1350,7 @@ with shared.gradio_root:
 
         ctrls = [currentTask]
         # FooocArte Sidebar Controls (Must be at the start after currentTask for correct worker mapping)
-        ctrls += [drive_toggle, clip_threshold, clip_toggle, batch_size, generation_mode]
+        ctrls += [drive_toggle, drive_path, clip_threshold, clip_toggle, batch_size, generation_mode]
         ctrls += [generate_image_grid]
         ctrls += [
             prompt, negative_prompt, style_selections,

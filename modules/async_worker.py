@@ -32,12 +32,17 @@ class AsyncTask:
         args.reverse()
         
         # FooocArte: Sidebar Parameters (Pushed to ctrls end, popped first from reversed)
-        self.drive_toggle = args.pop()
-        self.clip_threshold = args.pop()
-        self.clip_toggle = args.pop()
-        self.batch_size_config = args.pop()
-        self.generation_mode = args.pop()
+        self.drive_toggle = bool(args.pop())
+        self.drive_path = str(args.pop())
+        self.clip_threshold = float(args.pop())
+        self.clip_toggle = bool(args.pop())
+        self.batch_size_config = int(args.pop())
+        self.generation_mode = str(args.pop())
 
+        # Sync Sidebar to Global State
+        fooocarte.state.clip_threshold = self.clip_threshold if self.clip_toggle else 0.0
+        
+        # Batch Mode Logic: Override native image_number if Batch mode is active
         self.generate_image_grid = args.pop()
         self.prompt = args.pop()
         self.negative_prompt = args.pop()
@@ -48,7 +53,11 @@ class AsyncTask:
         self.original_steps = self.steps
 
         self.aspect_ratios_selection = args.pop()
-        self.image_number = args.pop()
+        self.image_number = int(args.pop())
+        
+        if self.generation_mode == "Batch":
+            print(f"[FooocArte] Batch Mode Active: Overriding Image Number {self.image_number} -> {self.batch_size_config}")
+            self.image_number = self.batch_size_config
         self.output_format = args.pop()
         self.seed = int(args.pop())
         self.read_wildcards_in_order = args.pop()

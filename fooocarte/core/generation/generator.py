@@ -42,6 +42,21 @@ def generate_once(engine, all_steps, async_task, callback, controlnet_canny_path
     result_path = img_paths[0] if img_paths else "N/A"
     engine.logger.log(status, async_task.prompt, result_path)
 
+    # Phase 21: Google Drive Persistence
+    if is_valid and getattr(async_task, 'drive_toggle', False):
+        try:
+            import shutil
+            drive_path = getattr(async_task, 'drive_path', "/content/drive/MyDrive/FooocArte")
+            if os.path.exists("/content/drive"):
+                if not os.path.exists(drive_path):
+                    os.makedirs(drive_path, exist_ok=True)
+                
+                dest_path = os.path.join(drive_path, os.path.basename(result_path))
+                shutil.copy(result_path, dest_path)
+                print(f"[FooocArte] Persistence: Image copied to Drive: {dest_path}")
+        except Exception as e:
+            print(f"[FooocArte] Persistence Error: {e}")
+
     # Tick the state machine after atomic success
     engine.tick(success=is_valid)
     

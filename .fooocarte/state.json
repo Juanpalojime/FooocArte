@@ -1,0 +1,13 @@
+{
+    "state": "IDLE",
+    "batch": {
+        "current": 1,
+        "total": 5,
+        "valid": 1,
+        "mode": "BATCH",
+        "state": "IDLE",
+        "paused": false
+    },
+    "timestamp": "2026-02-05T04:13:17.032272",
+    "metadata": {}
+}
