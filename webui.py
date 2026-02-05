@@ -94,8 +94,8 @@ def generate_clicked(task: worker.AsyncTask):
             gr.update(visible=False, value=None), \
             gr.update(visible=False), \
             True, \
-            gr.update(visible=True), # Show Pause
-            gr.update(visible=False) # Hide Resume
+            gr.update(visible=True), \
+            gr.update(visible=False)
 
         # Build UI State Dict (Simplified Mapping needed)
         # Note: This is tricky without exact mapping. 
@@ -137,22 +137,21 @@ def generate_clicked(task: worker.AsyncTask):
                 def event_callback(**kwargs):
                     q.put(kwargs)
 
-            
-        def default_save_image(image, metadata):
-             # Basic local save to 'outputs/YYYY-MM-DD'
-             # Returns absolute path
-             try:
-                 date_str = modules.util.get_current_time() # Or built-in
-                 # Use Fooocus standard logic if possible, or simple override
-                 out_dir = os.path.join(modules.config.path_outputs, datetime.datetime.now().strftime('%Y-%m-%d'))
-                 os.makedirs(out_dir, exist_ok=True)
-                 filename = f"{datetime.datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:4]}.png"
-                 path = os.path.join(out_dir, filename)
-                 image.save(path, pnginfo=modules.util.get_pnginfo(metadata))
-                 return path
-             except Exception as e:
-                 print(f"Save Error: {e}")
-                 return None
+                def default_save_image(image, metadata):
+                     # Basic local save to 'outputs/YYYY-MM-DD'
+                     # Returns absolute path
+                     try:
+                         date_str = modules.util.get_current_time() # Or built-in
+                         # Use Fooocus standard logic if possible, or simple override
+                         out_dir = os.path.join(modules.config.path_outputs, datetime.datetime.now().strftime('%Y-%m-%d'))
+                         os.makedirs(out_dir, exist_ok=True)
+                         filename = f"{datetime.datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:4]}.png"
+                         path = os.path.join(out_dir, filename)
+                         image.save(path, pnginfo=modules.util.get_pnginfo(metadata))
+                         return path
+                     except Exception as e:
+                         print(f"Save Error: {e}")
+                         return None
 
         def run_batch_thread():
              # We need to construct a robust ui_state.
@@ -290,6 +289,14 @@ def generate_clicked(task: worker.AsyncTask):
             gr.update(visible=False), \
             gr.update(visible=True, value=[]), \
             False # Unlock UI
+        
+            except Exception as e:
+                print(f"[Batch] Error: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                if 'BATCH_RUNNING_LOCK' in globals() and BATCH_RUNNING_LOCK.locked():
+                    BATCH_RUNNING_LOCK.release()
             
         return
     # -----------------------------
