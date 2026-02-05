@@ -19,6 +19,8 @@ class BatchStateMachine:
 
     def iniciar(self, total):
         self._assert_estado(EstadoBatch.INACTIVO)
+        if total <= 0:
+            raise ValueError("total debe ser > 0")
         self.total = total
         self.imagen_actual = 0
         self.estado = EstadoBatch.PREPARANDO
@@ -57,6 +59,8 @@ class BatchStateMachine:
         self.error = mensaje
 
     def reset(self):
+        if self.estado not in (EstadoBatch.COMPLETADO, EstadoBatch.ERROR):
+            raise RuntimeError(f"reset() debe estar en COMPLETADO o ERROR, actual: {self.estado}")
         self.estado = EstadoBatch.INACTIVO
         self.imagen_actual = 0
         self.total = 0
