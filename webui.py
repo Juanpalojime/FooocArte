@@ -26,24 +26,26 @@ from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
 
-def make_batch_status_html(state_name, current, total, queue_len=0):
-    color = "#2196F3"  # Blue for Running
-    if state_name == "IDLE": color = "#4CAF50" # Green
-    if state_name == "PAUSED": color = "#FF9800" # Orange
-    if state_name == "ERROR": color = "#F44336" # Red
-    if state_name == "CANCELLING": color = "#9E9E9E" # Grey
+def make_batch_status_html(state_name, current, total, approved=0):
+    # Professional Dark Accents
+    colors = {
+        "IDLE": "#059669",      # Emerald 600
+        "RUNNING": "#2563eb",   # Blue 600
+        "PAUSED": "#d97706",    # Amber 600
+        "ERROR": "#dc2626",     # Red 600
+        "CANCELLING": "#4b5563", # Gray 600
+        "PREPARING": "#4f46e5"  # Indigo 600
+    }
+    accent_color = colors.get(state_name, "#2563eb")
 
     status_text = f"<b>{state_name}</b>"
-    if total > 0:
-        progress = f"{current}/{total}"
-    else:
-        progress = "N/A"
+    progress_text = f"{current}/{total}" if total > 0 else "0/0"
 
     return f"""
-    <div style="display: flex; align-items: center; justify-content: space-between; background: {color}; color: white; padding: 10px 20px; border-radius: 8px; margin-bottom: 10px; font-family: sans-serif;">
-        <div><span style="opacity: 0.8; font-size: 0.9em;">STATUS</span><br/>{status_text}</div>
-        <div style="text-align: center;"><span style="opacity: 0.8; font-size: 0.9em;">PROGRESS</span><br/><b>{progress}</b></div>
-        <div style="text-align: right;"><span style="opacity: 0.8; font-size: 0.9em;">QUEUE</span><br/><b>{queue_len}</b></div>
+    <div style="display: flex; align-items: center; justify-content: space-between; background: #111827; color: #f3f4f6; padding: 12px 24px; border-radius: 12px; border-left: 6px solid {accent_color}; border-right: 1px solid #374151; border-top: 1px solid #374151; border-bottom: 1px solid #374151; font-family: 'Inter', sans-serif; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+        <div style="flex: 1;"><span style="color: #9ca3af; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em;">Status</span><br/><span style="color: {accent_color}; font-weight: 800; font-size: 1.1em;">● {state_name}</span></div>
+        <div style="flex: 1; text-align: center; border-left: 1px solid #374151; border-right: 1px solid #374151;"><span style="color: #9ca3af; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em;">Progreso</span><br/><b>{progress_text}</b></div>
+        <div style="flex: 1; text-align: right;"><span style="color: #9ca3af; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em;">Aprobadas</span><br/><b style="color: #10b981;">{approved}</b></div>
     </div>
     """
 
@@ -226,43 +228,52 @@ title = f'Fooocus {fooocus_version.version}'
 if isinstance(args_manager.args.preset, str):
     title += ' ' + args_manager.args.preset
 
-# CSS for FooocArte Professional Layout (8px / 12-Column System Ready)
+# CSS for FooocArte Professional Layout (Dark Luxury Tech Harmonized)
 css = """
-#global_header { border-bottom: 2px solid #F0F0F0; padding: 16px 24px !important; margin-bottom: 32px !important; background: #FFFFFF; }
-.sidebar_panel { border-right: 1px solid #EEEEEE; padding: 0 32px 32px 16px !important; }
+#global_header { border-bottom: 2px solid #374151; padding: 16px 24px !important; margin-bottom: 32px !important; background: #0b0f19; }
+.sidebar_panel { border-right: 1px solid #374151; padding: 0 32px 32px 16px !important; }
 .workspace_panel { padding: 0 16px 32px 32px !important; }
-.batch_inspector_card { background: #F8F9FA; padding: 24px; border-radius: 12px; border: 1px solid #E9ECEF; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
-.quality_card, .persistence_card { background: #FFFFFF; padding: 20px; border-radius: 12px; border: 1px solid #E9ECEF; margin-top: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-.status_idle { color: #2E7D32; font-weight: bold; }
-.status_running { color: #1565C0; font-weight: bold; }
-.status_paused { color: #EF6C00; font-weight: bold; }
-.status_error { color: #C62828; font-weight: bold; }
-#generate_button { height: 64px !important; font-size: 1.25em !important; font-weight: 800 !important; margin-top: 24px !important; border-radius: 12px !important; }
+.batch_inspector_card { background: #1f2937; padding: 24px; border-radius: 12px; border: 1px solid #374151; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.quality_card, .persistence_card { background: #1f2937; padding: 20px; border-radius: 12px; border: 1px solid #374151; margin-top: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
+.status_idle { color: #81C784; font-weight: bold; }
+.status_running { color: #64B5F6; font-weight: bold; }
+.status_paused { color: #FFB74D; font-weight: bold; }
+.status_error { color: #E57373; font-weight: bold; }
+#generate_button { height: 64px !important; font-size: 1.25em !important; font-weight: 800 !important; margin-top: 24px !important; border-radius: 12px !important; background: #1d4ed8 !important; color: white !important; }
 
-/* 🏅 Gallery Quality Badges */
+/* 🏅 Gallery Quality Badges (Harmonized Dark) */
 .image_gallery .caption-label { 
-    background: rgba(255, 255, 255, 0.95) !important; 
-    color: #333 !important; 
+    background: rgba(11, 15, 25, 0.85) !important; 
+    color: #EEE !important; 
     font-weight: 800 !important; 
     font-size: 12px !important; 
     padding: 4px 10px !important; 
     border-radius: 4px !important; 
-    border: 1px solid #DDD !important;
+    border: 1px solid #374151 !important;
     position: absolute !important;
     bottom: 8px !important;
     left: 8px !important;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.3) !important;
+    backdrop-filter: blur(4px);
 }
 
 /* 🟥 UX-05: Red Badge for Rejection (Targeting ✖ symbol) */
 .image_gallery .caption-label:contains("✖") {
-    background: #FFEBEE !important;
-    color: #C62828 !important;
-    border-color: #EF9A9A !important;
+    background: rgba(198, 40, 40, 0.85) !important;
+    color: #white !important;
+    border-color: #EF5350 !important;
 }
 """
 
-shared.gradio_root = gr.Blocks(title=title, css=css).queue()
+# FooocArte: High-Fidelity Theme Integration (simci_css)
+theme_path = os.path.join(os.getcwd(), 'simci_css', 'themes', 'theme_schema@0.0.2.json')
+try:
+    fooocarte_theme = gr.Theme.load(theme_path)
+except Exception as e:
+    print(f"Theme load failed: {e}. Falling back to default.")
+    fooocarte_theme = gr.themes.Soft()
+
+shared.gradio_root = gr.Blocks(title=title, css=css, theme=fooocarte_theme).queue()
 
 with shared.gradio_root:
     currentTask = gr.State(worker.AsyncTask(args=[]))
