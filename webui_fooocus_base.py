@@ -30,30 +30,6 @@ def get_task(*args):
 
     return worker.AsyncTask(args=args)
 
-def make_batch_status_html(estado, current, total, queue_length):
-    """Generate color-coded HTML for batch status header"""
-    color_map = {
-        "INACTIVO": "#6B7280", "PREPARANDO": "#3B82F6", "EJECUTANDO": "#3B82F6",
-        "EN_PAUSA": "#F59E0B", "CANCELANDO": "#F97316", 
-        "COMPLETADO": "#10B981", "ERROR": "#EF4444"
-    }
-    estado_es = {
-        "INACTIVO": "Inactivo", "PREPARANDO": "Preparando", "EJECUTANDO": "Ejecutando",
-        "EN_PAUSA": "En Pausa", "CANCELANDO": "Cancelando",
-        "COMPLETADO": "Completado", "ERROR": "Error"
-    }
-    color = color_map.get(estado, "#6B7280")
-    estado_texto = estado_es.get(estado, estado)
-    progress_html = f"{current}/{total}" if total > 0 else "—"
-    queue_html = f"Cola: {queue_length}" if queue_length > 0 else ""
-    
-    return f"""<div style="padding: 12px; background: {color}; color: white; border-radius: 8px; font-weight: bold; text-align: center;">
-        <span style="font-size: 16px;">🔄 Estado: {estado_texto}</span>
-        <span style="margin-left: 20px;">📊 Progreso: {progress_html}</span>
-        {f'<span style="margin-left: 20px;">📋 {queue_html}</span>' if queue_html else ''}
-    </div>"""
-
-
 def generate_clicked(task: worker.AsyncTask):
     import ldm_patched.modules.model_management as model_management
 
@@ -70,7 +46,6 @@ def generate_clicked(task: worker.AsyncTask):
     yield gr.update(visible=True, value=modules.html.make_progress_html(1, 'Waiting for task to start ...')), \
         gr.update(visible=True, value=None), \
         gr.update(visible=False, value=None), \
-        gr.update(visible=False), \
         gr.update(visible=False)
 
     worker.async_tasks.append(task)
@@ -91,13 +66,11 @@ def generate_clicked(task: worker.AsyncTask):
                 yield gr.update(visible=True, value=modules.html.make_progress_html(percentage, title)), \
                     gr.update(visible=True, value=image) if image is not None else gr.update(), \
                     gr.update(), \
-                    gr.update(visible=False), \
                     gr.update(visible=False)
             if flag == 'results':
                 yield gr.update(visible=True), \
                     gr.update(visible=True), \
                     gr.update(visible=True, value=product), \
-                    gr.update(visible=False), \
                     gr.update(visible=False)
             if flag == 'finish':
                 if not args_manager.args.disable_enhance_output_sorting:
@@ -106,8 +79,7 @@ def generate_clicked(task: worker.AsyncTask):
                 yield gr.update(visible=False), \
                     gr.update(visible=False), \
                     gr.update(visible=False), \
-                    gr.update(visible=True, value=product), \
-                    gr.update(visible=False)
+                    gr.update(visible=True, value=product)
                 finished = True
 
                 # delete Fooocus temp images, only keep gradio temp images
@@ -192,16 +164,6 @@ with shared.gradio_root:
                                               height=768, visible=False, elem_classes=['main_view', 'image_gallery'])
             progress_html = gr.HTML(value=modules.html.make_progress_html(32, 'Progress 32%'), visible=False,
                                     elem_id='progress-bar', elem_classes='progress-bar')
-            
-            # Batch Status Header - Global State Machine Integration
-            from modules.batch_state_machine import BatchStateMachine
-            batch_status_html = gr.HTML(
-                value=make_batch_status_html("INACTIVO", 0, 0, 0),
-                visible=False,
-                elem_id='batch_status_header',
-                elem_classes='batch_status'
-            )
-            
             gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=768,
                                  elem_classes=['resizable_area', 'main_view', 'final_gallery', 'image_gallery'],
                                  elem_id='final_gallery')
