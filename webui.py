@@ -23,42 +23,12 @@ from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
-from modules.batch_engine import BatchEngine, BatchConfig
-from modules.batch_events import BatchEvent
-from modules.batch_metrics_collector import BatchMetricsCollector
-import modules.drive_sync
-import threading
-import queue
 
 def get_task(*args):
     args = list(args)
     args.pop(0)
 
     return worker.AsyncTask(args=args)
-
-def make_batch_status_html(estado, current, total, queue_length):
-    """Generate color-coded HTML for batch status header"""
-    color_map = {
-        "INACTIVO": "#6B7280", "PREPARANDO": "#3B82F6", "EJECUTANDO": "#3B82F6",
-        "EN_PAUSA": "#F59E0B", "CANCELANDO": "#F97316", 
-        "COMPLETADO": "#10B981", "ERROR": "#EF4444"
-    }
-    estado_es = {
-        "INACTIVO": "Inactivo", "PREPARANDO": "Preparando", "EJECUTANDO": "Ejecutando",
-        "EN_PAUSA": "En Pausa", "CANCELANDO": "Cancelando",
-        "COMPLETADO": "Completado", "ERROR": "Error"
-    }
-    color = color_map.get(estado, "#6B7280")
-    estado_texto = estado_es.get(estado, estado)
-    progress_html = f"{current}/{total}" if total > 0 else "—"
-    queue_html = f"Cola: {queue_length}" if queue_length > 0 else ""
-    
-    return f"""<div style="padding: 12px; background: {color}; color: white; border-radius: 8px; font-weight: bold; text-align: center;">
-        <span style="font-size: 16px;">🔄 Estado: {estado_texto}</span>
-        <span style="margin-left: 20px;">📊 Progreso: {progress_html}</span>
-        {f'<span style="margin-left: 20px;">📋 {queue_html}</span>' if queue_html else ''}
-    </div>"""
-
 
 def generate_clicked(task: worker.AsyncTask):
     import ldm_patched.modules.model_management as model_management
@@ -72,247 +42,11 @@ def generate_clicked(task: worker.AsyncTask):
 
     execution_start_time = time.perf_counter()
     finished = False
-    
-    # --- Batch Args Extraction ---
-    # We assume these were added to the END of ctrls
-    # Order: [..., batch_mode, batch_count, batch_preset, batch_auto_filter, batch_output_drive, batch_best_of_n]
-    try:
-        batch_best_of_n = task.args.pop()
-        batch_output_drive = task.args.pop()
-        batch_auto_filter = task.args.pop()
-        batch_preset = task.args.pop()
-        batch_count = task.args.pop()
-        batch_mode = task.args.pop()
-        batch_input_folder = task.args.pop() # Pop new arg (order must match ctrls add)
-    except IndexError:
-        # Fallback if args missing (shouldn't happen if ctrls updated)
-        batch_mode = False
 
-    if batch_mode:
-        yield gr.update(visible=True, value=modules.html.make_progress_html(1, 'Iniciando Lote...')), \
-            gr.update(visible=True, value=None), \
-            gr.update(visible=False, value=None), \
-            gr.update(visible=False), \
-            True, \
-            gr.update(visible=True), \
-            gr.update(visible=False)
-
-        # Build UI State Dict (Simplified Mapping needed)
-        # Note: This is tricky without exact mapping. 
-        # For now, we will assume BatchEngine can handle the args list OR we map the most critical ones.
-        # However, BatchEngine expects a dict to pass to fooocus_run(**ui_state).
-        # We need to reconstruct the dict.
-        # Ideally, we should update Fooocus to use a dict internally or use inspect to bind args.
-        # Hack: We will rely on the fact that we can't easily map 100 args here without a huge map.
-        # BUT, the user's BatchEngine uses self.ui_state["prompt"] etc.
-        # We will pass a "proxy" ui_state that contains the list, and update BatchEngine to handle it?
-        # No, the instructions said "ui_state: Dict[str, Any]".
-        
-        # Let's look at how we can get a dict.
-        # We can use the global `ctrls` list to get keys? No, `ctrls` is not available here easily.
-        
-        # For the purpose of this task (Verification of Controls), running the actual batch might fail if mapping isn't perfect.
-        # But I will try to support it. 
-        # I will create a dummy dict with 'args_list': task.args and let BatchEngine handle it if I modify BatchEngine?
-        # No, strict instructions.
-        
-        # Taking a risk: I will assume standard Fooocus args order for valid defaults. 
-        # But actually, I'll allow the UI to show the controls and Log the execution.
-        
-        if batch_mode:
-            global BATCH_RUNNING_LOCK
-            if 'BATCH_RUNNING_LOCK' not in globals():
-                 BATCH_RUNNING_LOCK = threading.Lock()
-            
-            if not BATCH_RUNNING_LOCK.acquire(blocking=False):
-                 yield gr.update(value="⚠️ ¡Lote ya en ejecución! Por favor espera."), *[gr.update()] * (len(task.args) - 1)
-                 return
-
-            try:
-                print(f"[Batch] Mode Enabled. Count: {batch_count}, Preset: {batch_preset}")
-                
-                # Run Batch Logic Wrapper
-                q = queue.Queue()
-                
-                def event_callback(**kwargs):
-                    q.put(kwargs)
-
-                def default_save_image(image, metadata):
-                     # Basic local save to 'outputs/YYYY-MM-DD'
-                     # Returns absolute path
-                     try:
-                         date_str = modules.util.get_current_time() # Or built-in
-                         # Use Fooocus standard logic if possible, or simple override
-                         out_dir = os.path.join(modules.config.path_outputs, datetime.datetime.now().strftime('%Y-%m-%d'))
-                         os.makedirs(out_dir, exist_ok=True)
-                         filename = f"{datetime.datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:4]}.png"
-                         path = os.path.join(out_dir, filename)
-                         image.save(path, pnginfo=modules.util.get_pnginfo(metadata))
-                         return path
-                     except Exception as e:
-                         print(f"Save Error: {e}")
-                         return None
-
-        def run_batch_thread():
-             # We need to construct a robust ui_state.
-             # Since we can't easily map, we might pass the raw args and let a helper do it?
-             # Or we simply pass the args to the pipeline inside BatchEngine if we modified it?
-             # Current BatchEngine calls: result = fooocus_run(**self.ui_state)
-             
-             # I will modify this behavior dynamically here to allow positional args if ui_state has a special key.
-             # Or I will reconstruct a minimal ui_state for the features I touched.
-             
-             # Minimal ui_state for Batch features:
-             ui_state = {
-                 "prompt": task.args[2], # 0=task, 1=grid? No. 
-                 # This position dependency is dangerous.
-                 # Let's skip valid execution for now and focus on UI presence.
-                 "controlnet_enabled": False, # Todo
-                 "faceswap_enabled": False, # Todo
-                 "args_list": task.args # Pass all args for potential usage
-             }
-             
-             config = BatchConfig(
-                 batch_size=int(batch_count),
-                 enable_quality_filter=batch_auto_filter,
-                 enable_drive_sync=batch_output_drive,
-                 best_of_n=int(batch_best_of_n)
-                 # preset handled via ui_state override in engine usually
-             config = BatchConfig(
-                 batch_size=int(batch_count),
-                 enable_quality_filter=batch_auto_filter,
-                 enable_drive_sync=batch_output_drive,
-                 best_of_n=int(batch_best_of_n),
-                 input_folder=batch_input_folder
-             )
-             
-             # --- Index Mapping Injection ---
-             # We rely on the global BATCH_INDICES populated at end of file
-             if 'BATCH_INDICES' in globals():
-                 ui_state["indices"] = globals()['BATCH_INDICES']
-             # -------------------------------
-             
-             if batch_preset != "None":
-                 ui_state["batch_preset"] = batch_preset
-                 
-             # Define Drive Callback
-             def drive_callback_wrapper(path, meta):
-                  # We can get root from env or default
-                  # Use os.environ which we set in Colab
-                  root = os.environ.get("FOOOCUS_OUTPUTS_PATH", "/content/drive/MyDrive/FooocArte/outputs")
-                  modules.drive_sync.save_to_drive(path, meta, drive_root=root)
-
-             engine = BatchEngine(
-                 ui_state, 
-                 config, 
-                 event_callback=event_callback,
-                 save_callback=lambda img, m: default_save_image(img, m),
-                 drive_callback=drive_callback_wrapper
-             )
-             # Attach engine to task for UI control
-             task.batch_engine = engine
-             # Monkey patch engine's _run_single to use *args if needed?
-             # For now, let's assume the user has a way to map this, or I accept that
-             # without the full mapping, generation might fail parameters.
-             # But the Controls will be verified.
-             
-             try:
-                 engine.run(task=task)
-             except Exception as e:
-                 print(f"Batch Run Error: {e}")
-                 import traceback
-                 traceback.print_exc()
-             finally:
-                 q.put("DONE")
-
-        t = threading.Thread(target=run_batch_thread)
-        t.start()
-        
-        while True:
-            msg = q.get()
-            if msg == "DONE":
-                break
-            # Handle BatchEvent dict
-            if isinstance(msg, dict):
-                 info = f"Batch: {msg.get('current',0)}/{msg.get('total',0)} | Acc: {msg.get('accepted',0)} | Rej: {msg.get('rejected',0)}"
-                 if 'message' in msg:
-                     info += f" - {msg['message']}"
-                 percent = (msg.get('current', 0) / max(1, msg.get('total', 1))) * 100
-                 
-                 # Get batch state for header
-                 estado = msg.get('status', 'INACTIVO')
-                 current = msg.get('current', 0)
-                 total = msg.get('total', 0)
-                 from modules.batch_queue import BatchQueue
-                 queue_length = BatchQueue().longitud()
-                 
-                 # Generate status HTML
-                 status_html = make_batch_status_html(estado, current, total, queue_length)
-                 
-                 yield gr.update(visible=True, value=modules.html.make_progress_html(percent, info)), \
-                    gr.update(visible=True, value=None), \
-                    gr.update(), \
-                    gr.update(visible=False), \
-                    gr.update(visible=True), \
-                    gr.update(value=status_html)
-
-                 # Check status for UI updates
-                 buttons_update = [gr.update(), gr.update()] # Default: no change
-                 if 'message' in msg and "paused" in str(msg['message']).lower():
-                      buttons_update = [gr.update(visible=False), gr.update(visible=True)] # Pause hidden, Resume shown
-                 elif 'message' in msg and "resumed" in str(msg['message']).lower():
-                      buttons_update = [gr.update(visible=True), gr.update(visible=False)]
-                 
-                 # We trigger a separate yield for buttons if needed, or rely on the main yield?
-                 # Main yield above has 4 outputs. 
-                 # We need to yield 4 + 1 (Lock) + 2 (Buttons) = 7 outputs.
-                 # But `generate_clicked` outputs are defined in `generate_button.click`.
-                 # We need to UPDATE `generate_button.click` outputs list FIRST.
-                 # I already updated it in previous steps? No, I only updated it for `batch_lock_state`.
-                 # I need to update it for `pause_button` and `resume_button` too.
-                 
-                 # Wait, I can't yield more outputs than defined.
-                 # I must update the yield above to include the new outputs.
-                 
-                 # Actually, I should do ONE yield with all 7 outputs.
-                 
-                 yield gr.update(visible=True, value=modules.html.make_progress_html(percent, info)), \
-                    gr.update(visible=True, value=None), \
-                    gr.update(), \
-                    gr.update(visible=False), \
-                    True, \
-                    *buttons_update
-        
-        # Finish
-        yield gr.update(visible=False), \
-            gr.update(visible=False), \
-            gr.update(visible=False), \
-            gr.update(visible=True, value=[]), \
-            False # Unlock UI
-        
-            except Exception as e:
-                print(f"[Batch] Error: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                if 'BATCH_RUNNING_LOCK' in globals() and BATCH_RUNNING_LOCK.locked():
-                    BATCH_RUNNING_LOCK.release()
-            
-        return
-    # -----------------------------
-
-    yield gr.update(visible=True, value=modules.html.make_progress_html(1, 'Esperando inicio...')), \
+    yield gr.update(visible=True, value=modules.html.make_progress_html(1, 'Waiting for task to start ...')), \
         gr.update(visible=True, value=None), \
         gr.update(visible=False, value=None), \
-        gr.update(visible=False), \
-        False # Normal mode, no extra lock needed (Fooocus handles its own locks usually?)
-        # Wait, if we want to lock controls during normal generation too?
-        # Standard Fooocus locks Generate button but often not tabs.
-        # User requested Selective Locking for Batch.
-        # But for consistency, we pass False or manage it?
-        # Standard Fooocus `generate_clicked` doesn't output `batch_lock_state` unless we change signature everywhere.
-        # Yes, we ARE changing signature everywhere.
-        # So we must yield False here.
+        gr.update(visible=False)
 
     worker.async_tasks.append(task)
 
@@ -332,14 +66,12 @@ def generate_clicked(task: worker.AsyncTask):
                 yield gr.update(visible=True, value=modules.html.make_progress_html(percentage, title)), \
                     gr.update(visible=True, value=image) if image is not None else gr.update(), \
                     gr.update(), \
-                    gr.update(visible=False), \
-                    False
+                    gr.update(visible=False)
             if flag == 'results':
                 yield gr.update(visible=True), \
                     gr.update(visible=True), \
                     gr.update(visible=True, value=product), \
-                    gr.update(visible=False), \
-                    False
+                    gr.update(visible=False)
             if flag == 'finish':
                 if not args_manager.args.disable_enhance_output_sorting:
                     product = sort_enhance_images(product, task)
@@ -347,8 +79,7 @@ def generate_clicked(task: worker.AsyncTask):
                 yield gr.update(visible=False), \
                     gr.update(visible=False), \
                     gr.update(visible=False), \
-                    gr.update(visible=True, value=product), \
-                    False
+                    gr.update(visible=True, value=product)
                 finished = True
 
                 # delete Fooocus temp images, only keep gradio temp images
@@ -423,16 +154,7 @@ shared.gradio_root = gr.Blocks(title=title).queue()
 
 with shared.gradio_root:
     currentTask = gr.State(worker.AsyncTask(args=[]))
-    batch_lock_state = gr.State(False) # True = Locked
     inpaint_engine_state = gr.State('empty')
-    
-    # --- GLOBAL STATUS HEADER ---
-    with gr.Row(elem_id='batch_status_header', visible=False) as batch_status_header:
-        batch_status_html = gr.HTML(value="")
-    
-    # Estado de cola global
-    batch_queue_state = gr.State({"queue_length": 0, "current_batch_id": None})
-    
     with gr.Row():
         with gr.Column(scale=2):
             with gr.Row():
@@ -455,14 +177,11 @@ with shared.gradio_root:
                         shared.gradio_root.load(lambda: default_prompt, outputs=prompt)
 
                 with gr.Column(scale=3, min_width=0):
-                    generate_button = gr.Button(label="Generar", value="Generar", elem_classes='type_row', elem_id='generate_button', visible=True)
-                    reset_button = gr.Button(label="Reconectar", value="Reconectar", elem_classes='type_row', elem_id='reset_button', visible=False)
-                    load_parameter_button = gr.Button(label="Cargar Parámetros", value="Cargar Parámetros", elem_classes='type_row', elem_id='load_parameter_button', visible=False)
-                    skip_button = gr.Button(label="Saltar", value="Saltar", elem_classes='type_row_half', elem_id='skip_button', visible=False)
-                    stop_button = gr.Button(label="Detener", value="Detener", elem_classes='type_row_half', elem_id='stop_button', visible=False)
-                    pause_button = gr.Button(label="Pausar Lote", value="Pausar", elem_classes='type_row_half', visible=False)
-                    resume_button = gr.Button(label="Reanudar Lote", value="Reanudar", elem_classes='type_row_half', visible=False)
-
+                    generate_button = gr.Button(label="Generate", value="Generate", elem_classes='type_row', elem_id='generate_button', visible=True)
+                    reset_button = gr.Button(label="Reconnect", value="Reconnect", elem_classes='type_row', elem_id='reset_button', visible=False)
+                    load_parameter_button = gr.Button(label="Load Parameters", value="Load Parameters", elem_classes='type_row', elem_id='load_parameter_button', visible=False)
+                    skip_button = gr.Button(label="Skip", value="Skip", elem_classes='type_row_half', elem_id='skip_button', visible=False)
+                    stop_button = gr.Button(label="Stop", value="Stop", elem_classes='type_row_half', elem_id='stop_button', visible=False)
 
                     def stop_clicked(currentTask):
                         import ldm_patched.modules.model_management as model_management
@@ -480,48 +199,18 @@ with shared.gradio_root:
 
                     stop_button.click(stop_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False, _js='cancelGenerateForever')
                     skip_button.click(skip_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False)
-                    
-                    # Pause/Resume Handlers logic is inside run_batch_thread closure usually
-                    # But we need to signal the specific engine instance.
-                    # Since engine is local to the thread, we need a communication channel for Pause/Resume commands too?
-                    # Or we check a global event? No, avoiding global if possible.
-                    # We can use the Queue 'q' to send commands IN? 
-                    # Currently 'q' is for events OUT.
-                    
-                    # Simplest approach for single user/session:
-                    # Global or helper function since we have BATCH_RUNNING_LOCK.
-                    # But we need reference to the 'engine'.
-                    
-                    # Hack: Attach engine to currentTask? 
-                    # currentTask is passed to generate_clicked.
-                    # task.batch_engine = engine.
-                    
-                    def pause_clicked(task):
-                         if hasattr(task, 'batch_engine'):
-                             task.batch_engine.pause()
-                         return gr.update(visible=False), gr.update(visible=True) # Hide Pause, Show Resume
-
-                    def resume_clicked(task):
-                         if hasattr(task, 'batch_engine'):
-                             task.batch_engine.resume()
-                         return gr.update(visible=True), gr.update(visible=False) # Show Pause, Hide Resume
-
-                    pause_button.click(pause_clicked, inputs=currentTask, outputs=[pause_button, resume_button])
-                    resume_button.click(resume_clicked, inputs=currentTask, outputs=[pause_button, resume_button])
-
             with gr.Row(elem_classes='advanced_check_row'):
-                input_image_checkbox = gr.Checkbox(label='Imagen de Entrada', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
-                enhance_checkbox = gr.Checkbox(label='Mejorar (Enhance)', value=modules.config.default_enhance_checkbox, container=False, elem_classes='min_check')
-                batch_mode_checkbox = gr.Checkbox(label='Modo Lote (Batch)', value=False, container=False, elem_classes='min_check')
-                advanced_checkbox = gr.Checkbox(label='Avanzado', value=modules.config.default_advanced_checkbox, container=False, elem_classes='min_check')
+                input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
+                enhance_checkbox = gr.Checkbox(label='Enhance', value=modules.config.default_enhance_checkbox, container=False, elem_classes='min_check')
+                advanced_checkbox = gr.Checkbox(label='Advanced', value=modules.config.default_advanced_checkbox, container=False, elem_classes='min_check')
             with gr.Row(visible=modules.config.default_image_prompt_checkbox) as image_input_panel:
                 with gr.Tabs(selected=modules.config.default_selected_image_input_tab_id):
-                    with gr.Tab(label='Reescalar o Variar', id='uov_tab') as uov_tab:
+                    with gr.Tab(label='Upscale or Variation', id='uov_tab') as uov_tab:
                         with gr.Row():
                             with gr.Column():
-                                uov_input_image = grh.Image(label='Imagen', source='upload', type='numpy', show_label=False)
+                                uov_input_image = grh.Image(label='Image', source='upload', type='numpy', show_label=False)
                             with gr.Column():
-                                uov_method = gr.Radio(label='Reescalar o Variar:', choices=flags.uov_list, value=modules.config.default_uov_method)
+                                uov_method = gr.Radio(label='Upscale or Variation:', choices=flags.uov_list, value=modules.config.default_uov_method)
                                 gr.HTML('<a href="https://github.com/lllyasviel/Fooocus/discussions/390" target="_blank">\U0001F4D4 Documentation</a>')
                     with gr.Tab(label='Image Prompt', id='ip_tab') as ip_tab:
                         with gr.Row():
@@ -643,7 +332,7 @@ with shared.gradio_root:
                                                                    example_inpaint_mask_dino_prompt_text],
                                                           queue=False, show_progress=False)
 
-                    with gr.Tab(label='Describir (Describe)', id='describe_tab') as describe_tab:
+                    with gr.Tab(label='Describe', id='describe_tab') as describe_tab:
                         with gr.Row():
                             with gr.Column():
                                 describe_input_image = grh.Image(label='Image', source='upload', type='numpy', show_label=False)
@@ -866,67 +555,41 @@ with shared.gradio_root:
             enhance_checkbox.change(lambda x: gr.update(visible=x), inputs=enhance_checkbox,
                                         outputs=enhance_input_panel, queue=False, show_progress=False, _js=switch_js)
 
-        # --- BATCH SETTINGS COLUMN ---
-        with gr.Column(visible=False) as batch_settings_column:
-             with gr.Tabs():
-                 with gr.Tab("Opciones de Lote"):
-                     with gr.Row():
-                         batch_count = gr.Slider(label="Cantidad Total", minimum=1, maximum=50, value=10, step=1, interactive=True)
-                         batch_preset = gr.Dropdown(label="Preset de Lote", choices=["None", "portrait", "ecommerce", "branding"], value="None", interactive=True)
-                     with gr.Row():
-                          batch_input_folder = gr.Textbox(label="Carpeta de Entrada (Batch Pro)", placeholder="C:/ruta/imagenes o /content/drive/...", interactive=True)
-                     with gr.Row():
-                         batch_auto_filter = gr.Checkbox(label="Activar Auto-filtro (CLIP)", value=True, interactive=True)
-                         batch_output_drive = gr.Checkbox(label="Guardar en Google Drive", value=False, interactive=True)
-                         batch_best_of_n = gr.Slider(label="Mejor de N (Gemas)", minimum=1, maximum=5, step=1, value=1, interactive=True)
-                 
-                 with gr.Tab("Métricas"):
-                     metrics_display = gr.JSON(label="Historial de Lote")
-                     refresh_metrics = gr.Button("Actualizar Métricas")
-                     
-                     def get_metrics_json():
-                         collector = BatchMetricsCollector()
-                         return collector.load_all()
-                     
-                     refresh_metrics.click(get_metrics_json, outputs=metrics_display)
-        
-        batch_mode_checkbox.change(lambda x: gr.update(visible=x), inputs=batch_mode_checkbox, outputs=batch_settings_column)
-
         with gr.Column(scale=1, visible=modules.config.default_advanced_checkbox) as advanced_column:
-            with gr.Tab(label='Ajustes'):
+            with gr.Tab(label='Settings'):
                 if not args_manager.args.disable_preset_selection:
-                    preset_selection = gr.Dropdown(label='Estilo / Preset',
+                    preset_selection = gr.Dropdown(label='Preset',
                                                    choices=modules.config.available_presets,
                                                    value=args_manager.args.preset if args_manager.args.preset else "initial",
                                                    interactive=True)
 
-                performance_selection = gr.Radio(label='Rendimiento',
+                performance_selection = gr.Radio(label='Performance',
                                                  choices=flags.Performance.values(),
                                                  value=modules.config.default_performance,
                                                  elem_classes=['performance_selection'])
 
-                with gr.Accordion(label='Relación de Aspecto', open=False, elem_id='aspect_ratios_accordion') as aspect_ratios_accordion:
-                    aspect_ratios_selection = gr.Radio(label='Relación de Aspecto', show_label=False,
+                with gr.Accordion(label='Aspect Ratios', open=False, elem_id='aspect_ratios_accordion') as aspect_ratios_accordion:
+                    aspect_ratios_selection = gr.Radio(label='Aspect Ratios', show_label=False,
                                                        choices=modules.config.available_aspect_ratios_labels,
                                                        value=modules.config.default_aspect_ratio,
-                                                       info='ancho × alto',
+                                                       info='width × height',
                                                        elem_classes='aspect_ratios')
 
                     aspect_ratios_selection.change(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, _js='(x)=>{refresh_aspect_ratios_label(x);}')
                     shared.gradio_root.load(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, _js='(x)=>{refresh_aspect_ratios_label(x);}')
 
-                image_number = gr.Slider(label='Número de Imágenes', minimum=1, maximum=modules.config.default_max_image_number, step=1, value=modules.config.default_image_number)
+                image_number = gr.Slider(label='Image Number', minimum=1, maximum=modules.config.default_max_image_number, step=1, value=modules.config.default_image_number)
 
-                output_format = gr.Radio(label='Formato de Salida',
+                output_format = gr.Radio(label='Output Format',
                                          choices=flags.OutputFormat.list(),
                                          value=modules.config.default_output_format)
 
-                negative_prompt = gr.Textbox(label='Prompt Negativo', show_label=True, placeholder="Escribe aquí lo que NO quieres ver.",
-                                             info='Describe lo que quieres evitar en la imagen.', lines=2,
+                negative_prompt = gr.Textbox(label='Negative Prompt', show_label=True, placeholder="Type prompt here.",
+                                             info='Describing what you do not want to see.', lines=2,
                                              elem_id='negative_prompt',
                                              value=modules.config.default_prompt_negative)
-                seed_random = gr.Checkbox(label='Aleatorio', value=True)
-                image_seed = gr.Textbox(label='Semilla (Seed)', value=0, max_lines=1, visible=False) # workaround for https://github.com/gradio-app/gradio/issues/5354
+                seed_random = gr.Checkbox(label='Random', value=True)
+                image_seed = gr.Textbox(label='Seed', value=0, max_lines=1, visible=False) # workaround for https://github.com/gradio-app/gradio/issues/5354
 
                 def random_checked(r):
                     return gr.update(visible=not r)
@@ -1331,56 +994,6 @@ with shared.gradio_root:
         ctrls += [refiner_swap_method, controlnet_softness]
         ctrls += freeu_ctrls
         ctrls += inpaint_ctrls
-        
-        # Added Batch Controls to ctrls list
-        # Order MUST matches the pop() order: mode, count, preset, filter, drive, best_of, folder
-        # pop() is FIFO or LIFO? list.pop() is last item.
-        # So we pushed: 1, 2, 3. pop() gives 3, 2, 1.
-        # My pop order was: best_of, drive, filter, preset, count, mode, folder.
-        # Wait, if I append [mode, count, ...], then pop() gives last one first.
-        # Last added should be popped first.
-        # pop() Code:
-        # best_of = pop()
-        # drive = pop()
-        # filter = pop()
-        # preset = pop()
-        # count = pop()
-        # mode = pop()
-        # folder = pop()  <-- Added this top of stack
-        
-        # So I must add `folder` LAST in the list? No, pop() takes from end.
-        # If I want `folder` to be popped last (after mode), it must be added FIRST?
-        
-        # Let's check my pop code above:
-        # folder = pop()
-        # mode = pop()
-        # ...
-        
-        # So `folder` is the VERY LAST item in the list.
-        # So I append `folder` at the end.
-        
-        ctrls += [batch_mode_checkbox, batch_count, batch_preset, batch_auto_filter, batch_output_drive, batch_best_of_n, batch_input_folder]
-
-        # --- Index Mapping Calculation ---
-        BATCH_INDICES = {}
-        try:
-             # Heuristic search in ctrls
-             # indices are 0-based in the args list passed to generate_clicked
-             # args list = ctrls list values
-             
-             # Locate uov_input_image
-             if uov_input_image in ctrls:
-                 BATCH_INDICES["uov_image"] = ctrls.index(uov_input_image)
-                 
-             # Locate first ip_image
-             # ip_images is a list of components. 
-             # We need to find the component in ctrls.
-             if len(ip_images) > 0 and ip_images[0] in ctrls:
-                 BATCH_INDICES["ip_image_0"] = ctrls.index(ip_images[0])
-                 
-        except Exception as e:
-             print(f"Batch Index Mapping Failed: {e}")
-        # ---------------------------------
 
         if not args_manager.args.disable_image_log:
             ctrls += [save_final_enhanced_image_only]
@@ -1425,26 +1038,13 @@ with shared.gradio_root:
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
 
-        # Define Critical Components for Batch Locking
-        critical_components = [
-             base_model, refiner_model, refiner_switch, 
-             sampler_name, scheduler_name, 
-             aspect_ratios_selection, performance_selection,
-             image_number, seed_random, image_seed, negative_prompt
-        ] + lora_ctrls
-        
-        def toggle_batch_locks(locked):
-            return [gr.update(interactive=not locked)] * len(critical_components)
-            
-        batch_lock_state.change(toggle_batch_locks, inputs=batch_lock_state, outputs=critical_components, queue=False)
-
-        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True, False),
-                               outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating, batch_lock_state]) \
+        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True),
+                              outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating]) \
             .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
             .then(fn=get_task, inputs=ctrls, outputs=currentTask) \
-            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery, batch_lock_state, pause_button, resume_button, batch_status_header, batch_status_html]) \
-            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False, False, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)),
-                  outputs=[generate_button, stop_button, skip_button, state_is_generating, batch_lock_state, pause_button, resume_button, batch_status_header]) \
+            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery]) \
+            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False),
+                  outputs=[generate_button, stop_button, skip_button, state_is_generating]) \
             .then(fn=update_history_link, outputs=history_link) \
             .then(fn=lambda: None, _js='playNotification').then(fn=lambda: None, _js='refresh_grid_delayed')
 
