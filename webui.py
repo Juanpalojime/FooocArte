@@ -79,6 +79,17 @@ def make_batch_status_html(estado, current, total, approved=0):
     """
 
 
+def get_batch_status_view():
+    """Helper to generate the current batch status HTML view"""
+    status = fooocarte.state.batch_status
+    return make_batch_status_html(
+        status['state'], 
+        status['current'], 
+        status['total'], 
+        approved=fooocarte.state.valid_images
+    )
+
+
 def generate_clicked(task: worker.AsyncTask):
     import ldm_patched.modules.model_management as model_management
 
