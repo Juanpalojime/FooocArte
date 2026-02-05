@@ -34,35 +34,22 @@ class BatchConfig:
     input_folder: str = ""        # Path to input folder for batch processing
 
 
-# -----------------------------
-# Estado del Batch (runtime)
-# -----------------------------
-
-class BatchStatus(Enum):
-    INACTIVE = "INACTIVE"
-    PREPARING = "PREPARING"
-    RUNNING = "RUNNING"
-    PAUSED = "PAUSED"
-    CANCELLING = "CANCELLING"
-    COMPLETED = "COMPLETED"
-    ERROR = "ERROR"
+from modules.batch_state_machine import BatchStateMachine, EstadoBatch
 
 @dataclass
-class BatchState:
+class BatchStats:
     batch_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    current_index: int = 0
     accepted: int = 0
     rejected: int = 0
     retries: int = 0
     start_time: float = field(default_factory=time.time)
-    status: BatchStatus = BatchStatus.INACTIVE
-
-    def eta(self):
+    
+    def eta(self, current, total):
         elapsed = time.time() - self.start_time
-        if self.current_index == 0:
+        if current == 0:
             return None
-        avg = elapsed / self.current_index
-        return avg * (self.total - self.current_index)
+        avg = elapsed / current
+        return avg * (total - current)
 
 
 # -----------------------------
@@ -113,8 +100,10 @@ class BatchEngine:
         """
         self.ui_state = ui_state
         self.config = batch_config
-        self.state = BatchState()
-        self.state.total = batch_config.batch_size
+        # State Machine & Stats
+        self.sm = BatchStateMachine() # Strict State Machine
+        self.stats = BatchStats()     # Statistics (ID, Accepted, Rejected)
+        
         self.save_callback = save_callback
         self.drive_callback = drive_callback
         self.event_callback = event_callback
@@ -122,37 +111,45 @@ class BatchEngine:
         self.controlnet_cache = ControlNetBatchCache()
         self.face_cache = FaceEmbeddingCache()
         self.clip_filter = None # Lazy init or init here if persistent
-        self.persistence = BatchPersistence()
-        self.persistence = BatchPersistence()
+        self.persistence = BatchPersistence(self.config.enable_drive_sync)
+        if self.config.enable_drive_sync:
+             self.persistence.ensure_drive_mount()
+             
         self.clip_scores = []
         self.pause_event = threading.Event()
         self.pause_event.set() # Initially running (not paused)
 
     def pause(self):
-        self.state.status = BatchStatus.PAUSED
-        self.pause_event.clear()
-        self.emit("Lote pausado.")
-        self.log("[Batch] Proceso pausado por usuario.")
+        try:
+            self.sm.pausar()
+            self.pause_event.clear()
+            self.emit("Lote pausado.")
+            self.log("[Batch] Proceso pausado por usuario.")
+        except Exception as e:
+            self.log(f"[Batch] Error al pausar: {e}")
 
     def resume(self):
-        self.state.status = BatchStatus.RUNNING
-        self.pause_event.set()
-        self.emit("Lote reanudado.")
-        self.log("[Batch] Proceso reanudado.")
+        try:
+            self.sm.reanudar()
+            self.pause_event.set()
+            self.emit("Lote reanudado.")
+            self.log("[Batch] Proceso reanudado.")
+        except Exception as e:
+            self.log(f"[Batch] Error al reanudar: {e}")
 
     def emit(self, message: str):
         if self.event_callback:
-            # We assume the callback matches the signature provided by the user
-            # or expects the unpacked values for simplicity with Gradio
             try:
-                self.event_callback(
-                    current=self.state.current_index,
-                    total=self.state.total,
-                    accepted=self.state.accepted,
-                    rejected=self.state.rejected,
-                    message=message,
-                    eta=self.state.eta()
-                )
+                self.event_callback({
+                    'batch_id': self.stats.batch_id,
+                    'current': self.sm.imagen_actual,
+                    'total': self.sm.total,
+                    'accepted': self.stats.accepted,
+                    'rejected': self.stats.rejected,
+                    'status': self.sm.estado.name, # Send String name of Enum
+                    'message': message,
+                    'eta': self.stats.eta(self.sm.imagen_actual, self.sm.total)
+                })
             except Exception as e:
                 self.log(f"[Batch] Event callback failed: {e}")
 
@@ -161,8 +158,13 @@ class BatchEngine:
     # -------------------------
 
     def run(self, task=None):
-        self.state.status = BatchStatus.PREPARING
-        self.log(f"[Batch] Iniciando lote {self.state.batch_id}")
+        try:
+            self.sm.iniciar(self.config.batch_size) 
+        except Exception as e:
+            self.log(f"[Batch] Error inicio: {e}")
+            return
+
+        self.log(f"[Batch] Iniciando lote {self.stats.batch_id}")
         self.log(f"[Batch] Imágenes totales: {self.config.batch_size}")
         
         self.emit("Iniciando lote...")
@@ -191,33 +193,44 @@ class BatchEngine:
                     self.config.max_retries = preset_config["max_retries"]
                 if "clip_threshold" in preset_config:
                     self.ui_state["clip_threshold"] = preset_config["clip_threshold"]
-                # Apply other keys if necessary (enable_faceswap logic handled by UI state usually)
             except Exception as e:
                 self.log(f"[Batch] Failed to load preset {preset_name}: {e}")
         # ---------------------
 
+        try:
+            self.sm.preparado()
+        except:
+            pass
+
+        
+
         for i in range(self.config.batch_size):
             # --- Cancellation & Pause Check ---
+            # Replaced "task.last_stop" logic with SM check
             if task and task.last_stop in ['stop', 'skip']:
-                 self.state.status = BatchStatus.CANCELLING
+                 self.sm.cancelar()
                  self.log("[Batch] Proceso cancelado por el usuario.")
                  self.emit("Lote cancelado.")
+                 # Break, but first handle state
+                 if self.sm.estado == EstadoBatch.CANCELANDO:
+                     self.sm.cancelar_completado()
                  break
             
             # Wait if paused
             if not self.pause_event.is_set():
-                 self.emit("Lote pausado (esperando)...") # Update UI Status
-                 self.pause_event.wait() # Block here until set()
+                 self.sm.pausar() # Transition to PAUSED
+                 self.emit("Lote pausado (esperando)...")
+                 self.pause_event.wait() # Block
+                 self.sm.reanudar() # Transition to RUNNING
                  # Re-check cancellation after wake up
                  if task and task.last_stop in ['stop', 'skip']:
-                     self.state.status = BatchStatus.CANCELLING
+                     self.sm.cancelar()
+                     if self.sm.estado == EstadoBatch.CANCELANDO: # Should be
+                        self.sm.cancelar_completado()
                      break
-            
-            self.state.status = BatchStatus.RUNNING
             # --------------------------
-
-            self.state.current_index = i + 1
-            self.emit(f"Generando imagen {self.state.current_index}/{self.state.total}")
+            
+            self.emit(f"Generando imagen {self.sm.imagen_actual + 1}/{self.sm.total}")
             
             # --- ControlNet Cache Optimization ---
             if self.ui_state.get("controlnet_enabled") and "controlnet_image" in self.ui_state:
@@ -264,7 +277,7 @@ class BatchEngine:
                 success_final = False
                 
                 for attempt_n in range(self.config.best_of_n):
-                     self.emit(f"Generating candidate {attempt_n+1}/{self.config.best_of_n} for image {self.state.current_index}")
+                     self.emit(f"Generating candidate {attempt_n+1}/{self.config.best_of_n} for image {self.sm.imagen_actual}")
                      # Run without auto-saving
                      success, img, meta, score = self._run_single(i, save_output=False)
                      
@@ -306,21 +319,21 @@ class BatchEngine:
             # -----------------------
 
             if success:
-                self.state.accepted += 1
+                self.stats.accepted += 1
             else:
-                self.state.rejected += 1
+                self.stats.rejected += 1
             
-            self.emit(f"Finished image {self.state.current_index}")
+            self.emit(f"Finished image {self.sm.imagen_actual}")
             
             # --- Persistence Save ---
             self.persistence.save_state(
-                self.state.batch_id,
+                self.stats.batch_id,
                 {
-                    "current": self.state.current_index,
-                    "accepted": self.state.accepted,
-                    "rejected": self.state.rejected,
-                    "retries": self.state.retries,
-                    "total": self.state.total
+                    "current": self.sm.imagen_actual,
+                    "accepted": self.stats.accepted,
+                    "rejected": self.stats.rejected,
+                    "retries": self.stats.retries,
+                    "total": self.sm.total
                 }
             )
             # ------------------------
@@ -353,7 +366,7 @@ class BatchEngine:
 
         total_images = len(files)
         # Total tasks = files * batch_size
-        self.state.total = total_images * self.config.batch_size
+        self.sm.total = total_images * self.config.batch_size
         
         indices = self.ui_state.get("indices", {})
         
@@ -423,25 +436,25 @@ class BatchEngine:
 
             # Run Batch Loop for this file
             for i in range(self.config.batch_size):
-                self.state.current_index = (f_idx * self.config.batch_size) + i + 1
+                self.sm.imagen_actual = (f_idx * self.config.batch_size) + i + 1
                 self.emit(f"Processing {os.path.basename(file_path)} ({i+1}/{self.config.batch_size})")
 
                 # Re-use run logic?
                 # _run_single expects 'index' as loop index, but we can manage local index
-                success, _, _, _ = self._run_single(self.state.current_index, save_output=True)
+                success, _, _, _ = self._run_single(self.sm.imagen_actual, save_output=True)
                 
                 if success:
-                    self.state.accepted += 1
+                    self.stats.accepted += 1
                 else:
-                    self.state.rejected += 1
+                    self.stats.rejected += 1
                 
                 # Persistence
                 self.persistence.save_state(
-                    self.state.batch_id,
+                    self.stats.batch_id,
                     {
-                        "current": self.state.current_index,
-                        "accepted": self.state.accepted,
-                        "rejected": self.state.rejected,
+                        "current": self.sm.imagen_actual,
+                        "accepted": self.stats.accepted,
+                        "rejected": self.stats.rejected,
                         "files_processed": f_idx + 1
                     }
                 )
@@ -464,7 +477,7 @@ class BatchEngine:
                 
                 # Correct Fooocus Async Worker Call
                 tasks = [{
-                    "task_id": f"batch_{self.state.batch_id}_{index}_{attempt}",
+                    "task_id": f"batch_{self.stats.batch_id}_{index}_{attempt}",
                     "args": self.ui_state
                 }]
 
@@ -504,7 +517,7 @@ class BatchEngine:
 
                 # ---- Enriched Metadata ----
                 # Inject Batch Context for Drive Sync
-                metadata["batch_id"] = self.state.batch_id
+                metadata["batch_id"] = self.stats.batch_id
                 metadata["preset"] = self.ui_state.get("batch_preset", "None")
                 metadata["mode"] = "folder" if self.config.input_folder else "batch"
                 if final_score is not None:
@@ -532,7 +545,7 @@ class BatchEngine:
 
             except Exception as e:
                 attempt += 1
-                self.state.retries += 1
+                self.stats.retries += 1
                 self.log(f"[Batch] Image {index+1} failed: {str(e)}")
 
                 if attempt > self.config.max_retries:
@@ -557,16 +570,16 @@ class BatchEngine:
     # -------------------------
 
     def _final_report(self):
-        elapsed = time.time() - self.state.start_time
+        elapsed = time.time() - self.stats.start_time
 
         report = {
-            "batch_id": self.state.batch_id,
-            "total": self.state.total,
-            "accepted": self.state.accepted,
-            "rejected": self.state.rejected,
-            "retries": self.state.retries,
+            "batch_id": self.stats.batch_id,
+            "total": self.sm.total,
+            "accepted": self.stats.accepted,
+            "rejected": self.stats.rejected,
+            "retries": self.stats.retries,
             "total_time_sec": round(elapsed, 2),
-            "avg_time_per_image": round(elapsed / max(1, self.state.total), 2)
+            "avg_time_per_image": round(elapsed / max(1, self.sm.total), 2)
         }
 
         self.log("[Batch] Finished")
@@ -593,14 +606,14 @@ class BatchEngine:
                 vram = torch.cuda.get_device_properties(0).total_memory / 1e9
 
             metric = BatchMetric(
-                batch_id=self.state.batch_id,
+                batch_id=self.stats.batch_id,
                 timestamp=time.time(),
                 mode=self.ui_state.get("mode", "unknown"),
                 preset=self.ui_state.get("batch_preset"),
-                total=self.state.total,
-                accepted=self.state.accepted,
-                rejected=self.state.rejected,
-                avg_time=elapsed / max(1, self.state.total),
+                total=self.sm.total,
+                accepted=self.stats.accepted,
+                rejected=self.stats.rejected,
+                avg_time=elapsed / max(1, self.sm.total),
                 clip_avg=c_avg,
                 clip_min=c_min,
                 clip_max=c_max,
