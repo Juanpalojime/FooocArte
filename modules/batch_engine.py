@@ -1,8 +1,6 @@
-import time
-import uuid
-import traceback
-import torch
 import os
+import threading
+from enum import Enum
 
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
@@ -40,6 +38,15 @@ class BatchConfig:
 # Estado del Batch (runtime)
 # -----------------------------
 
+class BatchStatus(Enum):
+    INACTIVE = "INACTIVE"
+    PREPARING = "PREPARING"
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
+    CANCELLING = "CANCELLING"
+    COMPLETED = "COMPLETED"
+    ERROR = "ERROR"
+
 @dataclass
 class BatchState:
     batch_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -48,6 +55,7 @@ class BatchState:
     rejected: int = 0
     retries: int = 0
     start_time: float = field(default_factory=time.time)
+    status: BatchStatus = BatchStatus.INACTIVE
 
     def eta(self):
         elapsed = time.time() - self.start_time
@@ -115,7 +123,22 @@ class BatchEngine:
         self.face_cache = FaceEmbeddingCache()
         self.clip_filter = None # Lazy init or init here if persistent
         self.persistence = BatchPersistence()
+        self.persistence = BatchPersistence()
         self.clip_scores = []
+        self.pause_event = threading.Event()
+        self.pause_event.set() # Initially running (not paused)
+
+    def pause(self):
+        self.state.status = BatchStatus.PAUSED
+        self.pause_event.clear()
+        self.emit("Lote pausado.")
+        self.log("[Batch] Proceso pausado por usuario.")
+
+    def resume(self):
+        self.state.status = BatchStatus.RUNNING
+        self.pause_event.set()
+        self.emit("Lote reanudado.")
+        self.log("[Batch] Proceso reanudado.")
 
     def emit(self, message: str):
         if self.event_callback:
@@ -138,10 +161,11 @@ class BatchEngine:
     # -------------------------
 
     def run(self, task=None):
-        self.log(f"[Batch] Starting batch {self.state.batch_id}")
-        self.log(f"[Batch] Total images: {self.config.batch_size}")
+        self.state.status = BatchStatus.PREPARING
+        self.log(f"[Batch] Iniciando lote {self.state.batch_id}")
+        self.log(f"[Batch] Imágenes totales: {self.config.batch_size}")
         
-        self.emit("Initializing batch...")
+        self.emit("Iniciando lote...")
         self.controlnet_cache.clear()
         self.face_cache.clear()
         
@@ -173,15 +197,27 @@ class BatchEngine:
         # ---------------------
 
         for i in range(self.config.batch_size):
-            # --- Cancellation Check ---
+            # --- Cancellation & Pause Check ---
             if task and task.last_stop in ['stop', 'skip']:
-                 self.log("[Batch] Process cancelled by user.")
-                 self.emit("Batch cancelled.")
+                 self.state.status = BatchStatus.CANCELLING
+                 self.log("[Batch] Proceso cancelado por el usuario.")
+                 self.emit("Lote cancelado.")
                  break
+            
+            # Wait if paused
+            if not self.pause_event.is_set():
+                 self.emit("Lote pausado (esperando)...") # Update UI Status
+                 self.pause_event.wait() # Block here until set()
+                 # Re-check cancellation after wake up
+                 if task and task.last_stop in ['stop', 'skip']:
+                     self.state.status = BatchStatus.CANCELLING
+                     break
+            
+            self.state.status = BatchStatus.RUNNING
             # --------------------------
 
             self.state.current_index = i + 1
-            self.emit(f"Generating image {self.state.current_index}/{self.state.total}")
+            self.emit(f"Generando imagen {self.state.current_index}/{self.state.total}")
             
             # --- ControlNet Cache Optimization ---
             if self.ui_state.get("controlnet_enabled") and "controlnet_image" in self.ui_state:
@@ -289,6 +325,8 @@ class BatchEngine:
             )
             # ------------------------
 
+        if self.state.status != BatchStatus.CANCELLING:
+             self.state.status = BatchStatus.COMPLETED
         self._final_report()
             
     def _run_folder_mode(self, task=None):
@@ -326,7 +364,7 @@ class BatchEngine:
                  break
             # --------------------------
             
-            self.log(f"[Batch] Processing folder file {f_idx+1}/{total_images}: {os.path.basename(file_path)}")
+            self.log(f"[Batch] Procesando archivo {f_idx+1}/{total_images}: {os.path.basename(file_path)}")
             
             # Load Image (Fooocus expects numpy arrays usually for gr.Image type inputs in pipeline?)
             # Pipeline expects whatever the Gradio components provided.
