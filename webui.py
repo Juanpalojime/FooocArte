@@ -376,10 +376,9 @@ with shared.gradio_root:
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("### 🔍 Audit Log")
-                        audit_log_display = gr.Code(
+                        audit_log_display = gr.Textbox(
                             label="log.txt", 
                             value="[Cargando logs...]", 
-                            language="log", 
                             interactive=False,
                             lines=10
                         )
