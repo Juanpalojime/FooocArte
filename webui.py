@@ -51,32 +51,13 @@ def get_task(*args):
     args = list(args)
     args.pop(0)
 
+    # Defensive fix for Performance enum (v1.0 God Mode Stability)
+    # The performance selection is at index 9 after sidebar reordering
+    if len(args) > 9 and not isinstance(args[9], str):
+        args[9] = "Quality"
+
     return worker.AsyncTask(args=args)
 
-def make_batch_status_html(estado, current, total, approved=0):
-    """Generate professional HTML for batch status header following Figma wireframe"""
-    class_map = {
-        "IDLE": "status_idle", "RUNNING": "status_running", "PAUSED": "status_paused", 
-        "ERROR": "status_error", "PREPARANDO": "status_running", "CANCELANDO": "status_error"
-    }
-    state_class = class_map.get(estado, "")
-    progress_text = f"{current}/{total}" if total > 0 else "0/0"
-    
-    return f"""
-    <div style="display: flex; align-items: center; gap: 20px; font-family: 'Inter', sans-serif;">
-        <div class="{state_class}" style="font-weight: bold; font-size: 1.1em; min-width: 100px;">
-            ● {estado}
-        </div>
-        <div style="color: #666; border-left: 1px solid #DDD; padding-left: 20px;">
-            <span style="font-size: 0.8em; display: block;">PROGRESO</span>
-            <span style="font-weight: bold; color: #333;">{progress_text}</span>
-        </div>
-        <div style="color: #666; border-left: 1px solid #DDD; padding-left: 20px;">
-            <span style="font-size: 0.8em; display: block;">APROBADAS</span>
-            <span style="font-weight: bold; color: #4CAF50;">{approved}</span>
-        </div>
-    </div>
-    """
 
 
 def get_batch_status_view():
@@ -1304,7 +1285,10 @@ with shared.gradio_root:
                                            inpaint_mask_sam_max_detections, dino_erode_or_dilate, debugging_dino],
                                    outputs=inpaint_mask_image, show_progress=True, queue=True)
 
-        ctrls = [currentTask, generate_image_grid]
+        ctrls = [currentTask]
+        # FooocArte Sidebar Controls (Must be at the start after currentTask for correct worker mapping)
+        ctrls += [drive_toggle, clip_threshold, clip_toggle, batch_size, generation_mode]
+        ctrls += [generate_image_grid]
         ctrls += [
             prompt, negative_prompt, style_selections,
             performance_selection, aspect_ratios_selection, image_number, output_format, image_seed,
@@ -1337,8 +1321,7 @@ with shared.gradio_root:
                   enhance_uov_prompt_type]
         ctrls += enhance_ctrls
         
-        # FooocArte Sidebar Controls
-        ctrls += [generation_mode, batch_size, clip_toggle, clip_threshold, drive_toggle]
+        # Sidebar controls moved to start of ctrls list for correct mapping
 
         def parse_meta(raw_prompt_txt, is_generating):
             loaded_json = None
