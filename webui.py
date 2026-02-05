@@ -14,6 +14,7 @@ import modules.gradio_hijack as grh
 import modules.style_sorter as style_sorter
 import modules.meta_parser
 import fooocarte.main as fooocarte
+import fooocarte.ui.bindings.state_binding as ui_binding
 import args_manager
 import copy
 import launch
@@ -52,28 +53,30 @@ def get_task(*args):
 
     return worker.AsyncTask(args=args)
 
-def make_batch_status_html(estado, current, total, queue_length):
-    """Generate color-coded HTML for batch status header"""
-    color_map = {
-        "INACTIVO": "#6B7280", "PREPARANDO": "#3B82F6", "EJECUTANDO": "#3B82F6",
-        "EN_PAUSA": "#F59E0B", "CANCELANDO": "#F97316", 
-        "COMPLETADO": "#10B981", "ERROR": "#EF4444"
+def make_batch_status_html(estado, current, total, approved=0):
+    """Generate professional HTML for batch status header following Figma wireframe"""
+    class_map = {
+        "IDLE": "status_idle", "RUNNING": "status_running", "PAUSED": "status_paused", 
+        "ERROR": "status_error", "PREPARANDO": "status_running", "CANCELANDO": "status_error"
     }
-    estado_es = {
-        "INACTIVO": "Inactivo", "PREPARANDO": "Preparando", "EJECUTANDO": "Ejecutando",
-        "EN_PAUSA": "En Pausa", "CANCELANDO": "Cancelando",
-        "COMPLETADO": "Completado", "ERROR": "Error"
-    }
-    color = color_map.get(estado, "#6B7280")
-    estado_texto = estado_es.get(estado, estado)
-    progress_html = f"{current}/{total}" if total > 0 else "—"
-    queue_html = f"Cola: {queue_length}" if queue_length > 0 else ""
+    state_class = class_map.get(estado, "")
+    progress_text = f"{current}/{total}" if total > 0 else "0/0"
     
-    return f"""<div style="padding: 12px; background: {color}; color: white; border-radius: 8px; font-weight: bold; text-align: center;">
-        <span style="font-size: 16px;">🔄 Estado: {estado_texto}</span>
-        <span style="margin-left: 20px;">📊 Progreso: {progress_html}</span>
-        {f'<span style="margin-left: 20px;">📋 {queue_html}</span>' if queue_html else ''}
-    </div>"""
+    return f"""
+    <div style="display: flex; align-items: center; gap: 20px; font-family: 'Inter', sans-serif;">
+        <div class="{state_class}" style="font-weight: bold; font-size: 1.1em; min-width: 100px;">
+            ● {estado}
+        </div>
+        <div style="color: #666; border-left: 1px solid #DDD; padding-left: 20px;">
+            <span style="font-size: 0.8em; display: block;">PROGRESO</span>
+            <span style="font-weight: bold; color: #333;">{progress_text}</span>
+        </div>
+        <div style="color: #666; border-left: 1px solid #DDD; padding-left: 20px;">
+            <span style="font-size: 0.8em; display: block;">APROBADAS</span>
+            <span style="font-weight: bold; color: #4CAF50;">{approved}</span>
+        </div>
+    </div>
+    """
 
 
 def generate_clicked(task: worker.AsyncTask):
@@ -92,6 +95,9 @@ def generate_clicked(task: worker.AsyncTask):
         yield gr.update(visible=True, value=f"<div style='color: red; font-weight: bold;'>Error: El sistema ya está en estado {fooocarte.state.state.value}</div>"), \
               gr.update(), gr.update(), gr.update(), gr.update(), gr.update(interactive=True), status_view
         return
+    
+    # UX-02: Immediate State Visibility
+    fooocarte.state.state = fooocarte.GlobalState.PREPARING
     
     # Disable Generate Button and update status view
     status_view = get_batch_status_view()
@@ -132,6 +138,16 @@ def generate_clicked(task: worker.AsyncTask):
             if flag == 'finish':
                 if not args_manager.args.disable_enhance_output_sorting:
                     product = sort_enhance_images(product, task)
+
+                # COMMIT 2: Use global settings from sidebar
+                if task.generation_mode == "Batch":
+                    fooocarte.state.total = task.batch_size_config
+                else:
+                    fooocarte.state.total = 1
+                
+                # Update CLIP threshold if needed
+                if hasattr(fooocarte, 'engine') and hasattr(fooocarte.engine, 'clip_filter'):
+                    fooocarte.engine.clip_filter.threshold = task.clip_threshold
 
                 yield gr.update(visible=False), \
                     gr.update(visible=False), \
@@ -210,43 +226,164 @@ title = f'Fooocus {fooocus_version.version}'
 if isinstance(args_manager.args.preset, str):
     title += ' ' + args_manager.args.preset
 
-shared.gradio_root = gr.Blocks(title=title).queue()
+# CSS for FooocArte Professional Layout (8px / 12-Column System Ready)
+css = """
+#global_header { border-bottom: 2px solid #F0F0F0; padding: 16px 24px !important; margin-bottom: 32px !important; background: #FFFFFF; }
+.sidebar_panel { border-right: 1px solid #EEEEEE; padding: 0 32px 32px 16px !important; }
+.workspace_panel { padding: 0 16px 32px 32px !important; }
+.batch_inspector_card { background: #F8F9FA; padding: 24px; border-radius: 12px; border: 1px solid #E9ECEF; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+.quality_card, .persistence_card { background: #FFFFFF; padding: 20px; border-radius: 12px; border: 1px solid #E9ECEF; margin-top: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+.status_idle { color: #2E7D32; font-weight: bold; }
+.status_running { color: #1565C0; font-weight: bold; }
+.status_paused { color: #EF6C00; font-weight: bold; }
+.status_error { color: #C62828; font-weight: bold; }
+#generate_button { height: 64px !important; font-size: 1.25em !important; font-weight: 800 !important; margin-top: 24px !important; border-radius: 12px !important; }
+
+/* 🏅 Gallery Quality Badges */
+.image_gallery .caption-label { 
+    background: rgba(255, 255, 255, 0.95) !important; 
+    color: #333 !important; 
+    font-weight: 800 !important; 
+    font-size: 12px !important; 
+    padding: 4px 10px !important; 
+    border-radius: 4px !important; 
+    border: 1px solid #DDD !important;
+    position: absolute !important;
+    bottom: 8px !important;
+    left: 8px !important;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
+}
+
+/* 🟥 UX-05: Red Badge for Rejection (Targeting ✖ symbol) */
+.image_gallery .caption-label:contains("✖") {
+    background: #FFEBEE !important;
+    color: #C62828 !important;
+    border-color: #EF9A9A !important;
+}
+"""
+
+shared.gradio_root = gr.Blocks(title=title, css=css).queue()
 
 with shared.gradio_root:
     currentTask = gr.State(worker.AsyncTask(args=[]))
+    state_is_generating = gr.State(False) 
     inpaint_engine_state = gr.State('empty')
-    with gr.Row():
-        with gr.Column(scale=2):
-            with gr.Row():
-                progress_window = grh.Image(label='Preview', show_label=True, visible=False, height=768,
-                                            elem_classes=['main_view'])
-                progress_gallery = gr.Gallery(label='Finished Images', show_label=True, object_fit='contain',
-                                              height=768, visible=False, elem_classes=['main_view', 'image_gallery'])
-            progress_html = gr.HTML(value=modules.html.make_progress_html(32, 'Progress 32%'), visible=False,
-                                    elem_id='progress-bar', elem_classes='progress-bar')
-            
-            # Batch Status Header - Global State Machine Integration
-            def get_batch_status_view():
-                status = fooocarte.state.batch_status
-                return make_batch_status_html(
-                    status['state'], 
-                    status['current'], 
-                    status['total'], 
-                    0 # Queue length placeholder
-                )
-
+    
+    # 🧭 HEADER GLOBAL
+    with gr.Row(elem_id="global_header", variant="compact"):
+        with gr.Column(scale=4):
             batch_status_html = gr.HTML(
                 value=get_batch_status_view(),
-                visible=True,
-                elem_id='batch_status_header',
-                elem_classes='batch_status'
+                elem_id='batch_status_header'
+            )
+        with gr.Column(scale=1, min_width=100):
+            with gr.Row():
+                # Note: pause_button and resume_button are defined later, 
+                # but we can declare them here and move their definitions.
+                pause_header_btn = gr.Button("⏸ Pause", size="sm", elem_id="pause_button_header", visible=False)
+                resume_header_btn = gr.Button("▶ Resume", size="sm", elem_id="resume_button_header", visible=False)
+                cancel_header_btn = gr.Button("✖ Cancel", size="sm", elem_id="cancel_button_header", variant="stop", visible=False)
+
+    # ┌────────────────────────────┐
+    # │ Sidebar   │ Workspace      │
+    # └───────────┴────────────────┘
+    with gr.Row():
+        # 📂 SIDEBAR
+        with gr.Column(scale=1, elem_classes="sidebar_panel"):
+            gr.Markdown("### 🧩 1. Modalidad")
+            generation_mode = gr.Radio(
+                choices=["Single", "Batch"], 
+                value="Single", 
+                label="Modo de Generación",
+                elem_id="generation_mode"
             )
             
-            gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=768,
-                                 elem_classes=['resizable_area', 'main_view', 'final_gallery', 'image_gallery'],
-                                 elem_id='final_gallery')
+            with gr.Column(visible=False, elem_id="batch_settings_panel") as batch_settings_panel:
+                gr.Markdown("### 📦 2. Batch Settings")
+                batch_size = gr.Slider(
+                    minimum=1, maximum=50, step=1, value=10, 
+                    label="Batch Size",
+                    elem_id="batch_size"
+                )
+                gr.HTML("<small>Imágenes válidas requeridas</small>")
+
+            with gr.Column(elem_classes="quality_card"):
+                gr.Markdown("### 🧠 3. Quality Control")
+                clip_toggle = gr.Checkbox(label="Auto-filter (CLIP)", value=True, elem_id="clip_toggle")
+                clip_threshold = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, value=0.15, label="Threshold", elem_id="clip_threshold")
+                gr.HTML("<small>Las rechazadas no cuentan</small>")
+
+            with gr.Column(elem_classes="persistence_card"):
+                gr.Markdown("### 💾 4. Persistence")
+                drive_toggle = gr.Checkbox(label="Save to Drive", value=True, elem_id="drive_toggle")
+                gr.Textbox(label="Path Storage", value="/content/drive/MyDrive/FooocArte", interactive=False)
+
+            with gr.Column(visible=False, elem_id="recovery_panel") as recovery_panel:
+                gr.Markdown("⚠️ **Batch incompleto detectado**")
+                with gr.Row():
+                    resume_recovery_btn = gr.Button("Reanudar", size="sm")
+                    cancel_recovery_btn = gr.Button("Cancelar", size="sm")
+
+            # 🛠️ Dashboard Logic - Mode Switching
+            def update_mode_visibility(mode):
+                return gr.update(visible=(mode == "Batch"))
+
+            generation_mode.change(
+                fn=update_mode_visibility,
+                inputs=generation_mode,
+                outputs=batch_settings_panel,
+                queue=False
+            )
+
+        # 🧱 MAIN WORKSPACE
+        with gr.Column(scale=3, elem_classes="workspace_panel"):
             with gr.Row():
-                with gr.Column(scale=17):
+                with gr.Column(scale=4):
+                    with gr.Row():
+                        progress_window = grh.Image(label='Preview', show_label=True, visible=False, height=768,
+                                                    elem_classes=['main_view'])
+                        progress_gallery = gr.Gallery(label='Finished Images', show_label=True, object_fit='contain',
+                                                      height=768, visible=False, elem_classes=['main_view', 'image_gallery'])
+                
+                    gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=768,
+                                         elem_classes=['resizable_area', 'main_view', 'final_gallery', 'image_gallery'],
+                                         elem_id='final_gallery')
+                
+                # 📋 BATCH INSPECTOR (Side Panel)
+                with gr.Column(scale=1, min_width=200, elem_id="batch_inspector_panel"):
+                    gr.Markdown("### 📋 Batch Inspector")
+                    batch_inspector_html = gr.HTML(
+                        value="<div style='color: #888;'>No hay batch activo</div>",
+                        elem_id="batch_inspector"
+                    )
+                    gr.Markdown("---")
+                    gr.Markdown("**System Info**")
+                    system_info_display = gr.Markdown("VRAM: N/A")
+
+            # 📄 MENÚ AVANZADO (COLAPSABLE)
+            with gr.Accordion("📄 Auditoría y Sistema", open=False):
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### 🔍 Audit Log")
+                        audit_log_display = gr.Code(
+                            label="log.txt", 
+                            value="[Cargando logs...]", 
+                            language="log", 
+                            interactive=False,
+                            lines=10
+                        )
+                    with gr.Column():
+                        gr.Markdown("### ⚙️ System Info")
+                        system_info_display = gr.Markdown("**VRAM:** N/A | **Model:** N/A")
+                    # ⚠️ UX-04: RECOVERY BANNER
+                    with gr.Row(visible=fooocarte.state.persistence.has_recovery_data(), elem_id="recovery_panel") as recovery_panel:
+                        with gr.Column(variant="panel"):
+                            gr.Markdown("### ⚠️ Sesión Interrumpida Detectada")
+                            gr.Markdown("Se ha encontrado un batch incompleto. ¿Deseas recuperarlo o descartarlo?")
+                            with gr.Row():
+                                resume_recovery_btn = gr.Button("✅ Recuperar Sesión", variant="primary")
+                                cancel_recovery_btn = gr.Button("🗑️ Descartar y Empezar de Cero", variant="secondary")
+
                     prompt = gr.Textbox(show_label=False, placeholder="Type prompt here or paste parameters.", elem_id='positive_prompt',
                                         autofocus=True, lines=3)
 
@@ -258,8 +395,22 @@ with shared.gradio_root:
                     generate_button = gr.Button(label="Generate", value="Generate", elem_classes='type_row', elem_id='generate_button', visible=True)
                     reset_button = gr.Button(label="Reconnect", value="Reconnect", elem_classes='type_row', elem_id='reset_button', visible=False)
                     load_parameter_button = gr.Button(label="Load Parameters", value="Load Parameters", elem_classes='type_row', elem_id='load_parameter_button', visible=False)
-                    skip_button = gr.Button(label="Skip", value="Skip", elem_classes='type_row_half', elem_id='skip_button', visible=False)
-                    stop_button = gr.Button(label="Stop", value="Stop", elem_classes='type_row_half', elem_id='stop_button', visible=False)
+                    
+                    # Native Skip/Stop removed in favor of Header Cancel
+                    
+                    reset_engine_button = gr.Button(label="Reset Engine", value="🔄 Reset Engine", elem_classes='type_row', elem_id='reset_engine_button', visible=True)
+
+                    def pause_clicked():
+                        fooocarte.state.pause()
+                        return get_batch_status_view()
+
+                    def resume_clicked():
+                        fooocarte.state.resume()
+                        return get_batch_status_view()
+                    
+                    def reset_engine_clicked():
+                        fooocarte.state.reset()
+                        return get_batch_status_view()
 
                     def stop_clicked(currentTask):
                         # COMMIT 2: Use global state machine cancel
@@ -278,8 +429,83 @@ with shared.gradio_root:
                             model_management.interrupt_current_processing()
                         return currentTask
 
-                    stop_button.click(stop_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False, _js='cancelGenerateForever')
-                    skip_button.click(skip_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False)
+                    # Note: Original stop_clicked repurposed for cancel_header_btn
+                    cancel_header_btn.click(stop_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False, _js='cancelGenerateForever')
+                    
+                    # FooocArte Click Events (Header)
+                    pause_header_btn.click(pause_clicked, outputs=batch_status_html, queue=False, show_progress=False)
+                    resume_header_btn.click(resume_clicked, outputs=batch_status_html, queue=False, show_progress=False)
+                    reset_engine_button.click(reset_engine_clicked, outputs=batch_status_html, queue=False, show_progress=False)
+
+                    # Recovery Events
+                    def resume_recovery_clicked():
+                        fooocarte.state.resume()
+                        return [gr.update(visible=False), get_batch_status_view()]
+
+                    def cancel_recovery_clicked():
+                        fooocarte.state.reset()
+                        return [gr.update(visible=False), get_batch_status_view()]
+
+                    resume_recovery_btn.click(resume_recovery_clicked, outputs=[recovery_panel, batch_status_html], queue=False)
+                    cancel_recovery_btn.click(cancel_recovery_clicked, outputs=[recovery_panel, batch_status_html], queue=False)
+
+                    def make_batch_inspector_html(status):
+                        batch_id = status.get('batch_id', 'N/A')
+                        state = status.get('state', 'IDLE')
+                        approved = status.get('approved', 0)
+                        total = status.get('total', 0)
+                        return f"""
+                        <div class="batch_inspector_card">
+                            <div style="margin-bottom: 8px;"><b>Batch ID:</b> {batch_id}</div>
+                            <div style="margin-bottom: 8px;"><b>State:</b> {state}</div>
+                            <div style="margin-bottom: 8px;"><b>Progress:</b> {approved} / {total} (appr)</div>
+                            <div style="font-size: 0.8em; color: #666; margin-top: 12px;">Engine: FooocArte v1.0</div>
+                        </div>
+                        """
+
+                    def refresh_engine_ui():
+                        # Get status
+                        status = fooocarte.state.batch_status
+                        status_html = get_batch_status_view()
+                        inspector_html = make_batch_inspector_html(status)
+                        
+                        # Get visibility/interactivity updates from bindings
+                        updates = ui_binding.sync_ui_state()
+                        
+                        # Check for recovery state
+                        recovery_visible = fooocarte.state.has_recovery_data()
+                        
+                        # Get latest logs
+                        log_text = "[Log no disponible]"
+                        try:
+                            log_path = os.path.join(os.getcwd(), "log.txt")
+                            if os.path.exists(log_path):
+                                with open(log_path, "r", encoding="utf-8") as f:
+                                    lines = f.readlines()
+                                    log_text = "".join(lines[-15:]) # Last 15 lines
+                        except: pass
+
+                        # System Info
+                        import ldm_patched.modules.model_management as model_management
+                        vram = model_management.vram_usage() if hasattr(model_management, "vram_usage") else "N/A"
+                        sys_info = f"**VRAM:** {vram} | **Model:** Inferred"
+
+                        return [
+                            status_html,
+                            gr.update(**updates["generate_button"]),
+                            gr.update(**updates["cancel_status_btn"]),
+                            gr.update(**updates["pause_status_btn"]),
+                            gr.update(**updates["resume_status_btn"]),
+                            gr.update(**updates["reset_engine_button"]),
+                            # Sidebar & Advanced
+                            gr.update(**updates["generation_mode"]),
+                            gr.update(**updates["batch_size"]),
+                            gr.update(**updates["prompt"]),
+                            gr.update(visible=recovery_visible), # recovery_panel
+                            log_text, # audit_log_display
+                            sys_info, # system_info_display
+                            inspector_html # batch_inspector_html
+                        ]
             with gr.Row(elem_classes='advanced_check_row'):
                 input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
                 enhance_checkbox = gr.Checkbox(label='Enhance', value=modules.config.default_enhance_checkbox, container=False, elem_classes='min_check')
@@ -1087,6 +1313,9 @@ with shared.gradio_root:
                   enhance_input_image, enhance_checkbox, enhance_uov_method, enhance_uov_processing_order,
                   enhance_uov_prompt_type]
         ctrls += enhance_ctrls
+        
+        # FooocArte Sidebar Controls
+        ctrls += [generation_mode, batch_size, clip_toggle, clip_threshold, drive_toggle]
 
         def parse_meta(raw_prompt_txt, is_generating):
             loaded_json = None
@@ -1190,6 +1419,29 @@ with shared.gradio_root:
                       outputs=[prompt, style_selections], show_progress=True, queue=True) \
                 .then(fn=style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False) \
                 .then(lambda: None, _js='()=>{refresh_style_localization();}')
+
+        # FooocArte: Global UI Synchronizer (1s Polling)
+        engine_timer = gr.Timer(value=1.5, active=True)
+        engine_timer.tick(
+            fn=refresh_engine_ui, 
+            outputs=[
+                batch_status_html,
+                generate_button,
+                cancel_header_btn,
+                pause_header_btn,
+                resume_header_btn,
+                reset_engine_button,
+                generation_mode,
+                batch_size,
+                prompt,
+                recovery_panel,
+                audit_log_display,
+                system_info_display,
+                batch_inspector_html
+            ],
+            show_progress=False,
+            queue=False
+        )
 
 def dump_default_english_config():
     from modules.localization import dump_english_config

@@ -45,4 +45,4 @@ def generate_once(engine, all_steps, async_task, callback, controlnet_canny_path
     # Tick the state machine after atomic success
     engine.tick(success=is_valid)
     
-    return imgs, img_paths, current_progress
+    return imgs, img_paths, current_progress, score if 'score' in locals() else 1.0, is_valid

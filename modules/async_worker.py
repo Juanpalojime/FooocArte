@@ -30,6 +30,14 @@ class AsyncTask:
             return
 
         args.reverse()
+        
+        # FooocArte: Sidebar Parameters (Pushed to ctrls end, popped first from reversed)
+        self.drive_toggle = args.pop()
+        self.clip_threshold = args.pop()
+        self.clip_toggle = args.pop()
+        self.batch_size_config = args.pop()
+        self.generation_mode = args.pop()
+
         self.generate_image_grid = args.pop()
         self.prompt = args.pop()
         self.negative_prompt = args.pop()
@@ -237,13 +245,17 @@ def worker():
         print(f'[Fooocus] {text}')
         async_task.yields.append(['preview', (number, text, None)])
 
-    def yield_result(async_task, imgs, progressbar_index, black_out_nsfw, censor=True, do_not_show_finished_images=False):
+    def yield_result(async_task, imgs, progressbar_index, black_out_nsfw, censor=True, do_not_show_finished_images=False, caption=None):
         if not isinstance(imgs, list):
             imgs = [imgs]
 
         if censor and (modules.config.default_black_out_nsfw or black_out_nsfw):
             progressbar(async_task, progressbar_index, 'Checking for NSFW content ...')
             imgs = default_censor(imgs)
+        
+        # FooocArte: Support tuple results (path, caption) for gallery badges
+        if caption:
+            imgs = [(img, caption) for img in imgs]
 
         async_task.results = async_task.results + imgs
 
@@ -1314,12 +1326,7 @@ def worker():
         total_count = async_task.image_number
 
         def callback(step, x0, x, total_steps, y):
-            # COMMIT 2: Pause and Cancel logic
-            while fooocarte.state.is_paused():
-                time.sleep(0.5)
-                if fooocarte.state.state == fooocarte.GlobalState.CANCELLING:
-                    break
-            
+            # COMMIT 2: Interrupt logic only (Pause moved to task loop for UX-03)
             if fooocarte.state.state == fooocarte.GlobalState.CANCELLING:
                 # model_management.interrupt_current_processing(True) is already called by state transition
                 pass
@@ -1335,6 +1342,12 @@ def worker():
         persist_image = not async_task.should_enhance or not async_task.save_final_enhanced_image_only
 
         for current_task_id, task in enumerate(tasks):
+            # UX-03: Safe Pause (Check between images)
+            while fooocarte.state.is_paused():
+                time.sleep(0.5)
+                if fooocarte.state.state == fooocarte.GlobalState.CANCELLING:
+                    break
+
             # Skip images already generated if we are in recovery mode
             if recovery_data and current_task_id < resume_index:
                 print(f"[FooocArte] Recovery: Skipping task {current_task_id + 1} (already generated)")
@@ -1346,13 +1359,20 @@ def worker():
             
             try:
                 # Use modular atomic generate_once()
-                imgs, img_paths, current_progress = generate_once(
+                imgs, img_paths, current_progress, score, is_valid = generate_once(
                     fooocarte.state, all_steps, async_task, callback, controlnet_canny_path, controlnet_cpds_path,
                     current_task_id, denoising_strength, final_scheduler_name, goals, initial_latent,
                     async_task.steps, switch, task, loras, tiled, use_expansion, width, height,
                     current_progress, preparation_steps, async_task.image_number,
                     show_intermediate_results, persist_image
                 )
+
+                # FooocArte: Attach Quality Badge to gallery captions
+                symbol = "✔" if is_valid else "✖"
+                caption = f"{symbol} {score:.4f}"
+                
+                yield_result(async_task, img_paths, 100, async_task.black_out_nsfw, False,
+                             show_intermediate_results, caption=caption)
 
                 current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) * async_task.steps * (current_task_id + 1))
                 images_to_enhance += imgs
@@ -1540,7 +1560,14 @@ def worker():
                 task.yields.append(['finish', task.results])
                 pipeline.prepare_text_encoder(async_call=True)
             except Exception as e:
-                # COMMIT 2: Mark lifecycle as ERROR
+                # COMMIT 2: Mark lifecycle as ERROR (UX-06)
+                print(f"[FooocArte] CRITICAL ERROR: {str(e)}")
+                fooocarte.state.mark_error(str(e))
+                fooocarte.state.reset()
+                
+                stop_processing(task, processing_start_time)
+                # Ensure we don't hang the worker
+                continue
                 fooocarte.state.error(str(e))
                 fooocarte.state.reset()
                 
