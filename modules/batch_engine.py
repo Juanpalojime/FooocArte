@@ -447,6 +447,21 @@ class BatchEngine:
                             raise ValueError(f"CLIP score too low: {clip_score:.4f} < {self.ui_state.get('clip_threshold', 0.25)}")
 
 
+                # ---- Enriched Metadata ----
+                # Inject Batch Context for Drive Sync
+                metadata["batch_id"] = self.state.batch_id
+                metadata["preset"] = self.ui_state.get("batch_preset", "None")
+                metadata["mode"] = "folder" if self.config.input_folder else "batch"
+                if final_score is not None:
+                     metadata["clip_score"] = round(final_score, 4)
+                     
+                # Add input file info if in folder mode
+                if "input_file" not in metadata and self.config.input_folder:
+                     # Calculate from current index? Or pass it down?
+                     # We don't have file path easily here in _run_single unless we pass it.
+                     # Let's assume the caller loop set it in ui_state TEMPORARILY or we ignore it.
+                     pass
+
                 # ---- Guardado ----
                 image_path = None
                 if save_output and self.save_callback:
@@ -457,7 +472,7 @@ class BatchEngine:
                     if image_path:
                         self.drive_callback(image_path, metadata)
 
-                self.log(f"[Batch] Image {index+1} accepted")
+                self.log(f"[Batch] Image {index+1} accepted (CLIP: {metadata.get('clip_score', 'N/A')})")
                 return True, image, metadata, final_score
 
             except Exception as e:
