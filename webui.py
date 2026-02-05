@@ -26,7 +26,7 @@ from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
 
-def make_fooocarte_batch_status_html(state_name, current, total, rejected=0):
+def make_fooocarte_batch_status_html(state_name, current, total, ok_count=0, rejected=0):
     # Professional Dark Accents
     colors = {
         "IDLE": "#059669",      # Emerald 600
@@ -45,7 +45,7 @@ def make_fooocarte_batch_status_html(state_name, current, total, rejected=0):
     <div style="display: flex; align-items: center; justify-content: space-between; background: #111827; color: #f3f4f6; padding: 12px 24px; border-radius: 12px; border-left: 6px solid {accent_color}; border-right: 1px solid #374151; border-top: 1px solid #374151; border-bottom: 1px solid #374151; font-family: 'Inter', sans-serif; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
         <div style="flex: 1;"><span style="color: #9ca3af; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em;">Status</span><br/><span style="color: {accent_color}; font-weight: 800; font-size: 1.1em;">● {state_name}</span></div>
         <div style="flex: 1; text-align: center; border-left: 1px solid #374151; border-right: 1px solid #374151;"><span style="color: #9ca3af; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em;">Progreso</span><br/><b>{progress_text}</b></div>
-        <div style="flex: 1; text-align: right; padding-left: 10px;"><span style="color: #10b981; font-size: 0.75em; text-transform: uppercase;">OK: {approved}</span><br/><span style="color: #ef4444; font-size: 0.75em; text-transform: uppercase;">ERR: {rejected}</span></div>
+        <div style="flex: 1; text-align: right; padding-left: 10px;"><span style="color: #10b981; font-size: 0.75em; text-transform: uppercase;">OK: {ok_count}</span><br/><span style="color: #ef4444; font-size: 0.75em; text-transform: uppercase;">ERR: {rejected}</span></div>
     </div>
     """
 
@@ -71,7 +71,8 @@ def get_batch_status_view():
     return make_fooocarte_batch_status_html(
         status.get('state', 'IDLE'), 
         current, 
-        status.get('total', 0),
+        status.get('total', 0), 
+        ok_count=valid,
         rejected=max(0, current - valid)
     )
 
