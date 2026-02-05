@@ -287,6 +287,11 @@ with shared.gradio_root:
     currentTask = gr.State(worker.AsyncTask(args=[]))
     state_is_generating = gr.State(False) 
     inpaint_engine_state = gr.State('empty')
+
+    # 🛠️ Fooocus Legacy State Components (Restored for Event Integrity)
+    progress_html = gr.HTML(value="", visible=False)
+    progress_window = gr.State(None)
+    progress_gallery = gr.State(None)
     
     # 🧭 HEADER GLOBAL
     with gr.Row(elem_id="global_header", variant="compact"):
