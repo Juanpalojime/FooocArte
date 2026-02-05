@@ -1,5 +1,8 @@
 import os
 import threading
+import uuid
+import time
+import torch
 from enum import Enum
 
 from typing import Dict, Any, Optional
@@ -323,6 +326,9 @@ class BatchEngine:
             else:
                 self.stats.rejected += 1
             
+            # Advance State Machine
+            self.sm.tick()
+            
             self.emit(f"Finished image {self.sm.imagen_actual}")
             
             # --- Persistence Save ---
@@ -338,8 +344,9 @@ class BatchEngine:
             )
             # ------------------------
 
-        if self.state.status != BatchStatus.CANCELLING:
-             self.state.status = BatchStatus.COMPLETED
+        # Final state check
+        if self.sm.estado == EstadoBatch.COMPLETADO:
+            self.emit("Lote completado.")
         self._final_report()
             
     def _run_folder_mode(self, task=None):

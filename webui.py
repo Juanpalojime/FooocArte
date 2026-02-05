@@ -36,6 +36,30 @@ def get_task(*args):
 
     return worker.AsyncTask(args=args)
 
+def make_batch_status_html(estado, current, total, queue_length):
+    """Generate color-coded HTML for batch status header"""
+    color_map = {
+        "INACTIVO": "#6B7280", "PREPARANDO": "#3B82F6", "EJECUTANDO": "#3B82F6",
+        "EN_PAUSA": "#F59E0B", "CANCELANDO": "#F97316", 
+        "COMPLETADO": "#10B981", "ERROR": "#EF4444"
+    }
+    estado_es = {
+        "INACTIVO": "Inactivo", "PREPARANDO": "Preparando", "EJECUTANDO": "Ejecutando",
+        "EN_PAUSA": "En Pausa", "CANCELANDO": "Cancelando",
+        "COMPLETADO": "Completado", "ERROR": "Error"
+    }
+    color = color_map.get(estado, "#6B7280")
+    estado_texto = estado_es.get(estado, estado)
+    progress_html = f"{current}/{total}" if total > 0 else "—"
+    queue_html = f"Cola: {queue_length}" if queue_length > 0 else ""
+    
+    return f"""<div style="padding: 12px; background: {color}; color: white; border-radius: 8px; font-weight: bold; text-align: center;">
+        <span style="font-size: 16px;">🔄 Estado: {estado_texto}</span>
+        <span style="margin-left: 20px;">📊 Progreso: {progress_html}</span>
+        {f'<span style="margin-left: 20px;">📋 {queue_html}</span>' if queue_html else ''}
+    </div>"""
+
+
 def generate_clicked(task: worker.AsyncTask):
     import ldm_patched.modules.model_management as model_management
 
@@ -210,17 +234,28 @@ def generate_clicked(task: worker.AsyncTask):
             if msg == "DONE":
                 break
             # Handle BatchEvent dict
-            # event_callback(current, total, accepted, rejected, message, eta)
             if isinstance(msg, dict):
                  info = f"Batch: {msg.get('current',0)}/{msg.get('total',0)} | Acc: {msg.get('accepted',0)} | Rej: {msg.get('rejected',0)}"
                  if 'message' in msg:
                      info += f" - {msg['message']}"
                  percent = (msg.get('current', 0) / max(1, msg.get('total', 1))) * 100
                  
+                 # Get batch state for header
+                 estado = msg.get('status', 'INACTIVO')
+                 current = msg.get('current', 0)
+                 total = msg.get('total', 0)
+                 from modules.batch_queue import BatchQueue
+                 queue_length = BatchQueue().longitud()
+                 
+                 # Generate status HTML
+                 status_html = make_batch_status_html(estado, current, total, queue_length)
+                 
                  yield gr.update(visible=True, value=modules.html.make_progress_html(percent, info)), \
                     gr.update(visible=True, value=None), \
                     gr.update(), \
-                    gr.update(visible=False)
+                    gr.update(visible=False), \
+                    gr.update(visible=True), \
+                    gr.update(value=status_html)
 
                  # Check status for UI updates
                  buttons_update = [gr.update(), gr.update()] # Default: no change
@@ -383,6 +418,14 @@ with shared.gradio_root:
     currentTask = gr.State(worker.AsyncTask(args=[]))
     batch_lock_state = gr.State(False) # True = Locked
     inpaint_engine_state = gr.State('empty')
+    
+    # --- GLOBAL STATUS HEADER ---
+    with gr.Row(elem_id='batch_status_header', visible=False) as batch_status_header:
+        batch_status_html = gr.HTML(value="")
+    
+    # Estado de cola global
+    batch_queue_state = gr.State({"queue_length": 0, "current_batch_id": None})
+    
     with gr.Row():
         with gr.Column(scale=2):
             with gr.Row():
@@ -1388,15 +1431,13 @@ with shared.gradio_root:
             
         batch_lock_state.change(toggle_batch_locks, inputs=batch_lock_state, outputs=critical_components, queue=False)
 
-        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True, False), # Add False for batch_lock_state initially? Or wait for generator?
-                               # Actually the first lambda runs BEFORE generator. 
-                               # If we set batch_lock_state=False initially, it's fine.
+        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True, False),
                                outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating, batch_lock_state]) \
             .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
             .then(fn=get_task, inputs=ctrls, outputs=currentTask) \
-            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery, batch_lock_state, pause_button, resume_button]) \
-            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False, False, gr.update(visible=False), gr.update(visible=False)),
-                  outputs=[generate_button, stop_button, skip_button, state_is_generating, batch_lock_state, pause_button, resume_button]) \
+            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery, batch_lock_state, pause_button, resume_button, batch_status_header, batch_status_html]) \
+            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False, False, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)),
+                  outputs=[generate_button, stop_button, skip_button, state_is_generating, batch_lock_state, pause_button, resume_button, batch_status_header]) \
             .then(fn=update_history_link, outputs=history_link) \
             .then(fn=lambda: None, _js='playNotification').then(fn=lambda: None, _js='refresh_grid_delayed')
 
