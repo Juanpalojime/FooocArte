@@ -58,6 +58,7 @@ def generate_clicked(task: worker.AsyncTask):
         batch_preset = task.args.pop()
         batch_count = task.args.pop()
         batch_mode = task.args.pop()
+        batch_input_folder = task.args.pop() # Pop new arg (order must match ctrls add)
     except IndexError:
         # Fallback if args missing (shouldn't happen if ctrls updated)
         batch_mode = False
@@ -123,7 +124,19 @@ def generate_clicked(task: worker.AsyncTask):
                  enable_drive_sync=batch_output_drive,
                  best_of_n=int(batch_best_of_n)
                  # preset handled via ui_state override in engine usually
+             config = BatchConfig(
+                 batch_size=int(batch_count),
+                 enable_quality_filter=batch_auto_filter,
+                 enable_drive_sync=batch_output_drive,
+                 best_of_n=int(batch_best_of_n),
+                 input_folder=batch_input_folder
              )
+             
+             # --- Index Mapping Injection ---
+             # We rely on the global BATCH_INDICES populated at end of file
+             if 'BATCH_INDICES' in globals():
+                 ui_state["indices"] = globals()['BATCH_INDICES']
+             # -------------------------------
              
              if batch_preset != "None":
                  ui_state["batch_preset"] = batch_preset
@@ -693,6 +706,8 @@ with shared.gradio_root:
                          batch_count = gr.Slider(label="Batch Count", minimum=1, maximum=50, value=10, step=1, interactive=True)
                          batch_preset = gr.Dropdown(label="Batch Preset", choices=["None", "portrait", "ecommerce", "branding"], value="None", interactive=True)
                      with gr.Row():
+                          batch_input_folder = gr.Textbox(label="Input Folder (Batch Pro)", placeholder="C:/images or /content/drive/...", interactive=True)
+                     with gr.Row():
                          batch_auto_filter = gr.Checkbox(label="Enable Auto-filter (CLIP)", value=True, interactive=True)
                          batch_output_drive = gr.Checkbox(label="Save to Google Drive", value=False, interactive=True)
                          batch_best_of_n = gr.Slider(label="Best of N", minimum=1, maximum=5, step=1, value=1, interactive=True)
@@ -1149,8 +1164,55 @@ with shared.gradio_root:
         ctrls += freeu_ctrls
         ctrls += inpaint_ctrls
         
-        # Added Batch Controls to ctrls list so they are passed to generate_clicked
-        ctrls += [batch_mode_checkbox, batch_count, batch_preset, batch_auto_filter, batch_output_drive, batch_best_of_n]
+        # Added Batch Controls to ctrls list
+        # Order MUST matches the pop() order: mode, count, preset, filter, drive, best_of, folder
+        # pop() is FIFO or LIFO? list.pop() is last item.
+        # So we pushed: 1, 2, 3. pop() gives 3, 2, 1.
+        # My pop order was: best_of, drive, filter, preset, count, mode, folder.
+        # Wait, if I append [mode, count, ...], then pop() gives last one first.
+        # Last added should be popped first.
+        # pop() Code:
+        # best_of = pop()
+        # drive = pop()
+        # filter = pop()
+        # preset = pop()
+        # count = pop()
+        # mode = pop()
+        # folder = pop()  <-- Added this top of stack
+        
+        # So I must add `folder` LAST in the list? No, pop() takes from end.
+        # If I want `folder` to be popped last (after mode), it must be added FIRST?
+        
+        # Let's check my pop code above:
+        # folder = pop()
+        # mode = pop()
+        # ...
+        
+        # So `folder` is the VERY LAST item in the list.
+        # So I append `folder` at the end.
+        
+        ctrls += [batch_mode_checkbox, batch_count, batch_preset, batch_auto_filter, batch_output_drive, batch_best_of_n, batch_input_folder]
+
+        # --- Index Mapping Calculation ---
+        BATCH_INDICES = {}
+        try:
+             # Heuristic search in ctrls
+             # indices are 0-based in the args list passed to generate_clicked
+             # args list = ctrls list values
+             
+             # Locate uov_input_image
+             if uov_input_image in ctrls:
+                 BATCH_INDICES["uov_image"] = ctrls.index(uov_input_image)
+                 
+             # Locate first ip_image
+             # ip_images is a list of components. 
+             # We need to find the component in ctrls.
+             if len(ip_images) > 0 and ip_images[0] in ctrls:
+                 BATCH_INDICES["ip_image_0"] = ctrls.index(ip_images[0])
+                 
+        except Exception as e:
+             print(f"Batch Index Mapping Failed: {e}")
+        # ---------------------------------
 
         if not args_manager.args.disable_image_log:
             ctrls += [save_final_enhanced_image_only]

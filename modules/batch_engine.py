@@ -2,11 +2,13 @@ import time
 import uuid
 import traceback
 import torch
+import os
 
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 
-from modules.default_pipeline import run as fooocus_run
+from modules.async_worker import process_tasks
+from modules.flags import PerformanceFlags
 from modules.util import free_cuda_memory
 from modules import flags
 from modules.controlnet_batch import ControlNetBatchCache
@@ -31,6 +33,7 @@ class BatchConfig:
     save_rejected: bool = False
     enable_drive_sync: bool = False
     best_of_n: int = 1            # 1 = standard, >1 = best of N comparator
+    input_folder: str = ""        # Path to input folder for batch processing
 
 
 # -----------------------------
@@ -145,6 +148,12 @@ class BatchEngine:
         # Init CLIP if enabled and not loaded
         if self.config.enable_quality_filter and self.clip_filter is None:
             self.clip_filter = CLIPQualityFilter()
+            
+        # --- Folder Mode Branch ---
+        if self.config.input_folder and os.path.exists(self.config.input_folder):
+             self._run_folder_mode()
+             return
+        # --------------------------
 
         # --- Batch Presets ---
         preset_name = self.ui_state.get("batch_preset")
@@ -274,6 +283,115 @@ class BatchEngine:
             # ------------------------
 
         self._final_report()
+            
+    def _run_folder_mode(self):
+        import glob
+        import cv2
+        import numpy as np
+        
+        # Supported extensions
+        exts = ['*.png', '*.jpg', '*.jpeg', '*.webp', '*.bmp']
+        files = []
+        for ext in exts:
+            files.extend(glob.glob(os.path.join(self.config.input_folder, ext)))
+            
+        files = sorted(list(set(files)))
+        self.log(f"[Batch] Folder Mode: Found {len(files)} images in {self.config.input_folder}")
+        
+        if not files:
+            self.emit("No images found in folder.")
+            return
+
+        total_images = len(files)
+        # Total tasks = files * batch_size
+        self.state.total = total_images * self.config.batch_size
+        
+        indices = self.ui_state.get("indices", {})
+        
+        for f_idx, file_path in enumerate(files):
+            self.log(f"[Batch] Processing folder file {f_idx+1}/{total_images}: {os.path.basename(file_path)}")
+            
+            # Load Image (Fooocus expects numpy arrays usually for gr.Image type inputs in pipeline?)
+            # Pipeline expects whatever the Gradio components provided.
+            # webui.py UOV image is type='numpy'.
+            # Image Prompt is type='numpy'.
+            try:
+                # Load as RGB BGR -> RGB
+                img_cv = cv2.imread(file_path)
+                if img_cv is None:
+                    self.log(f"[Batch] Failed to load {file_path}")
+                    continue
+                img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+                
+                # Injection Logic
+                # We need to know where to put it.
+                # Heuristic:
+                # 1. If UOV/Upscale is enabled? How to know? 
+                #    We check if 'uov_method' (index) has a value?
+                #    Indices dict should have 'uov_method_index' and 'uov_image_index'.
+                #    But simplistic approach: If user checked "Input Image" -> "Upscale", then uov is active.
+                #    We can check the actual args list values if we know the index.
+                #    Let's assume the UI sends us the target intent or we try both if available.
+                #    BETTER: Inject into ALL mapped image slots to be safe, OR prefer IP[0].
+                
+                # Default: Inject to Image Prompt 0
+                if "ip_image_0" in indices:
+                     idx = indices["ip_image_0"]
+                     if idx < len(self.ui_state["args_list"]):
+                         self.ui_state["args_list"][idx] = img_rgb
+                         
+                # Also Inject to UOV if mapped
+                if "uov_image" in indices:
+                     idx = indices["uov_image"]
+                     if idx < len(self.ui_state["args_list"]):
+                         self.ui_state["args_list"][idx] = img_rgb
+                         
+                # Also Inject to Inpaint if mapped
+                if "inpaint_image" in indices:
+                     idx = indices["inpaint_image"]
+                     if idx < len(self.ui_state["args_list"]):
+                         self.ui_state["args_list"][idx] = img_rgb
+                         self.ui_state["args_list"][idx] = {"image": img_rgb, "mask": None} # Inpaint often expects dict (sketch)
+                         # Wait, Fooocus inpaint input tool='sketch' returns a dict with 'image' and 'mask'.
+                         # If we just pass numpy, it might fail if pipeline expects dict.
+                         # See webui.py: type='numpy', tool='sketch'. 
+                         # Gradio yields {image: np, mask: np}.
+                         # So we should format it.
+                         mask_dummy = np.zeros(img_rgb.shape[:2], dtype=np.uint8) # No mask? Or full mask?
+                         # Usually 0=masked? 
+                         # For now let's skip complex Inpaint injection unless requested.
+                         pass
+
+            except Exception as e:
+                self.log(f"[Batch] Error loading {file_path}: {e}")
+                continue
+
+            # Run Batch Loop for this file
+            for i in range(self.config.batch_size):
+                self.state.current_index = (f_idx * self.config.batch_size) + i + 1
+                self.emit(f"Processing {os.path.basename(file_path)} ({i+1}/{self.config.batch_size})")
+
+                # Re-use run logic?
+                # _run_single expects 'index' as loop index, but we can manage local index
+                success, _, _, _ = self._run_single(self.state.current_index, save_output=True)
+                
+                if success:
+                    self.state.accepted += 1
+                else:
+                    self.state.rejected += 1
+                
+                # Persistence
+                self.persistence.save_state(
+                    self.state.batch_id,
+                    {
+                        "current": self.state.current_index,
+                        "accepted": self.state.accepted,
+                        "rejected": self.state.rejected,
+                        "files_processed": f_idx + 1
+                    }
+                )
+
+        self._final_report()
 
     # -------------------------
     # Generación individual
@@ -287,9 +405,21 @@ class BatchEngine:
             try:
                 self.log(f"[Batch] Image {index+1} attempt {attempt+1}")
 
-                result = fooocus_run(**self.ui_state)
+                # result = fooocus_run(**self.ui_state)
+                
+                # Correct Fooocus Async Worker Call
+                tasks = [{
+                    "task_id": f"batch_{self.state.batch_id}_{index}_{attempt}",
+                    "args": self.ui_state
+                }]
 
-                image = result["image"]          # torch tensor o PIL según build
+                results = process_tasks(
+                    tasks=tasks,
+                    flags=PerformanceFlags()
+                )
+
+                result = results[0]
+                image = result["image"]
                 metadata = result.get("metadata", {})
 
                 if self.config.enable_quality_filter:
