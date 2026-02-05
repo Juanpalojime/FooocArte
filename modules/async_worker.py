@@ -1,9 +1,11 @@
 import threading
+import numpy as np
+from PIL import Image
 
 from extras.inpaint_mask import generate_mask_from_image, SAMOptions
 from modules.patch import PatchSettings, patch_settings, patch_all
 import modules.config
-import modules.fooocarte_core as fooocarte
+import fooocarte.main as fooocarte
 
 
 patch_all()
@@ -159,6 +161,22 @@ class AsyncTask:
         self.should_enhance = self.enhance_checkbox and (self.enhance_uov_method != disabled.casefold() or len(self.enhance_ctrls) > 0)
         self.images_to_enhance_count = 0
         self.enhance_stats = {}
+
+    def to_dict(self):
+        """Serialize relevant task data for persistence (skipping large binary data)."""
+        data = {}
+        for k, v in self.__getstate__().items() if hasattr(self, '__getstate__') else self.__dict__.items():
+            # Skip yields, results, and complex UI components/images/paths
+            if k in ['yields', 'results', 'uov_input_image', 'inpaint_input_image', 
+                     'inpaint_mask_image_upload', 'enhance_input_image', 'cn_tasks']:
+                continue
+            # Basic JSON serializable check
+            try:
+                json.dumps(v)
+                data[k] = v
+            except:
+                continue
+        return data
 
 async_tasks = []
 
@@ -325,6 +343,7 @@ def worker():
                      do_not_show_finished_images=not show_intermediate_results or async_task.disable_intermediate_results)
 
         return imgs, img_paths, current_progress
+
 
     def apply_patch_settings(async_task):
         patch_settings[pid] = PatchSettings(
@@ -1076,8 +1095,23 @@ def worker():
             print("[FooocArte] State Machine rejects start: System is not IDLE")
             return
             
-        fooocarte.state.start_generation({'task_id': getattr(async_task, 'current_tab', 'default')})
+        # Check for recovery data
+        recovery_data = fooocarte.state.persistence.load_previous_session()
+        resume_index = 0
+        if recovery_data:
+            print(f"[FooocArte] Detected interrupted session. Resuming from image {recovery_data['batch']['current'] + 1}")
+            resume_index = recovery_data['batch']['current']
+            # Re-sync valid images count
+            fooocarte.state._valid_images = recovery_data['batch']['valid']
+
+        fooocarte.state.start_generation(
+            {'task_id': getattr(async_task, 'current_tab', 'default')},
+            total=async_task.image_number
+        )
         
+        # Save initial config for recovery tracking
+        fooocarte.state.persistence.save_config(async_task.to_dict())
+
         preparation_start_time = time.perf_counter()
         async_task.processing = True
 
@@ -1301,18 +1335,24 @@ def worker():
         persist_image = not async_task.should_enhance or not async_task.save_final_enhanced_image_only
 
         for current_task_id, task in enumerate(tasks):
-            progressbar(async_task, current_progress, f'Preparing task {current_task_id + 1}/{async_task.image_number} ...')
-            execution_start_time = time.perf_counter()
+            # Skip images already generated if we are in recovery mode
+            if recovery_data and current_task_id < resume_index:
+                print(f"[FooocArte] Recovery: Skipping task {current_task_id + 1} (already generated)")
+                # Sync current batch counter without rendering
+                fooocarte.state._batch_current = current_task_id + 1
+                continue
 
+            progressbar(async_task, current_progress, f'Preparing task {current_task_id + 1}/{async_task.image_number} ...')
+            
             try:
-                imgs, img_paths, current_progress = process_task(all_steps, async_task, callback, controlnet_canny_path,
-                                                                 controlnet_cpds_path, current_task_id,
-                                                                 denoising_strength, final_scheduler_name, goals,
-                                                                 initial_latent, async_task.steps, switch, task['c'],
-                                                                 task['uc'], task, loras, tiled, use_expansion, width,
-                                                                 height, current_progress, preparation_steps,
-                                                                 async_task.image_number, show_intermediate_results,
-                                                                 persist_image)
+                # Use modular atomic generate_once()
+                imgs, img_paths, current_progress = generate_once(
+                    fooocarte.state, all_steps, async_task, callback, controlnet_canny_path, controlnet_cpds_path,
+                    current_task_id, denoising_strength, final_scheduler_name, goals, initial_latent,
+                    async_task.steps, switch, task, loras, tiled, use_expansion, width, height,
+                    current_progress, preparation_steps, async_task.image_number,
+                    show_intermediate_results, persist_image
+                )
 
                 current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) * async_task.steps * (current_task_id + 1))
                 images_to_enhance += imgs
@@ -1321,14 +1361,14 @@ def worker():
                 if async_task.last_stop == 'skip':
                     print('User skipped')
                     async_task.last_stop = False
+                    # Note: We don't tick() here or we tick with success=False if we want to track skips
+                    fooocarte.state.tick(success=False)
                     continue
                 else:
                     print('User stopped')
                     break
 
             del task['c'], task['uc']  # Save memory
-            execution_time = time.perf_counter() - execution_start_time
-            print(f'Generating and saving time: {execution_time:.2f} seconds')
 
         if not async_task.should_enhance:
             print(f'[Enhance] Skipping, preconditions aren\'t met')

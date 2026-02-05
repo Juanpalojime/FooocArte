@@ -13,7 +13,7 @@ import modules.flags as flags
 import modules.gradio_hijack as grh
 import modules.style_sorter as style_sorter
 import modules.meta_parser
-import modules.fooocarte_core as fooocarte
+import fooocarte.main as fooocarte
 import args_manager
 import copy
 import launch
@@ -24,6 +24,27 @@ from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
+
+def make_batch_status_html(state_name, current, total, queue_len=0):
+    color = "#2196F3"  # Blue for Running
+    if state_name == "IDLE": color = "#4CAF50" # Green
+    if state_name == "PAUSED": color = "#FF9800" # Orange
+    if state_name == "ERROR": color = "#F44336" # Red
+    if state_name == "CANCELLING": color = "#9E9E9E" # Grey
+
+    status_text = f"<b>{state_name}</b>"
+    if total > 0:
+        progress = f"{current}/{total}"
+    else:
+        progress = "N/A"
+
+    return f"""
+    <div style="display: flex; align-items: center; justify-content: space-between; background: {color}; color: white; padding: 10px 20px; border-radius: 8px; margin-bottom: 10px; font-family: sans-serif;">
+        <div><span style="opacity: 0.8; font-size: 0.9em;">STATUS</span><br/>{status_text}</div>
+        <div style="text-align: center;"><span style="opacity: 0.8; font-size: 0.9em;">PROGRESS</span><br/><b>{progress}</b></div>
+        <div style="text-align: right;"><span style="opacity: 0.8; font-size: 0.9em;">QUEUE</span><br/><b>{queue_len}</b></div>
+    </div>
+    """
 
 def get_task(*args):
     args = list(args)
@@ -60,26 +81,27 @@ def generate_clicked(task: worker.AsyncTask):
 
     with model_management.interrupt_processing_mutex:
         model_management.interrupt_processing = False
-    # outputs=[progress_html, progress_window, progress_gallery, gallery]
+    # outputs=[progress_html, progress_window, progress_gallery, gallery, generate_button, batch_status_html]
 
     if len(task.args) == 0:
         return
 
     # COMMIT 2: Check global state before starting
     if not fooocarte.state.can_start():
-        status_html = fooocarte. PRINCIPLES # Reusing principles as error or just simple message
+        status_view = get_batch_status_view()
         yield gr.update(visible=True, value=f"<div style='color: red; font-weight: bold;'>Error: El sistema ya está en estado {fooocarte.state.state.value}</div>"), \
-              gr.update(), gr.update(), gr.update(), gr.update()
+              gr.update(), gr.update(), gr.update(), gr.update(), gr.update(interactive=True), status_view
         return
-
-    execution_start_time = time.perf_counter()
-    finished = False
-
+    
+    # Disable Generate Button and update status view
+    status_view = get_batch_status_view()
     yield gr.update(visible=True, value=modules.html.make_progress_html(1, 'Waiting for task to start ...')), \
         gr.update(visible=True, value=None), \
         gr.update(visible=False, value=None), \
         gr.update(visible=False), \
-        gr.update(visible=False)
+        gr.update(visible=False), \
+        gr.update(interactive=False), \
+        status_view
 
     worker.async_tasks.append(task)
 
@@ -115,7 +137,9 @@ def generate_clicked(task: worker.AsyncTask):
                     gr.update(visible=False), \
                     gr.update(visible=False), \
                     gr.update(visible=True, value=product), \
-                    gr.update(visible=False)
+                    gr.update(visible=False), \
+                    gr.update(interactive=True), \
+                    get_batch_status_view()
                 finished = True
 
                 # delete Fooocus temp images, only keep gradio temp images
@@ -202,10 +226,18 @@ with shared.gradio_root:
                                     elem_id='progress-bar', elem_classes='progress-bar')
             
             # Batch Status Header - Global State Machine Integration
-            from modules.batch_state_machine import BatchStateMachine
+            def get_batch_status_view():
+                status = fooocarte.state.batch_status
+                return make_batch_status_html(
+                    status['state'], 
+                    status['current'], 
+                    status['total'], 
+                    0 # Queue length placeholder
+                )
+
             batch_status_html = gr.HTML(
-                value=make_batch_status_html("INACTIVO", 0, 0, 0),
-                visible=False,
+                value=get_batch_status_view(),
+                visible=True,
                 elem_id='batch_status_header',
                 elem_classes='batch_status'
             )
@@ -230,6 +262,9 @@ with shared.gradio_root:
                     stop_button = gr.Button(label="Stop", value="Stop", elem_classes='type_row_half', elem_id='stop_button', visible=False)
 
                     def stop_clicked(currentTask):
+                        # COMMIT 2: Use global state machine cancel
+                        fooocarte.state.cancel()
+                        
                         import ldm_patched.modules.model_management as model_management
                         currentTask.last_stop = 'stop'
                         if (currentTask.processing):
@@ -1088,7 +1123,7 @@ with shared.gradio_root:
                               outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating]) \
             .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
             .then(fn=get_task, inputs=ctrls, outputs=currentTask) \
-            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery]) \
+            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery, generate_button, batch_status_html]) \
             .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False),
                   outputs=[generate_button, stop_button, skip_button, state_is_generating]) \
             .then(fn=update_history_link, outputs=history_link) \

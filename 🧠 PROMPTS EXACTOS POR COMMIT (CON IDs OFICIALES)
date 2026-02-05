@@ -1,0 +1,205 @@
+🧠 PROMPTS EXACTOS POR COMMIT (CON IDs OFICIALES)
+FooocArte — by Soboost Corp.
+
+Regla absoluta
+1 commit = 1 prompt = 1 responsabilidad
+El ID NO cambia jamás.
+
+🔰 FA-000 — Fundaciones del Core
+
+Commit ID: FA-000
+Commit msg:
+chore(core): define FooocArte core principles and state contract
+
+Prompt Claude
+Eres Lead Architect en Python.
+
+Trabajas sobre Fooocus, que evoluciona oficialmente a FooocArte (by Soboost Corp).
+
+Objetivo:
+Definir las bases del core SIN implementar lógica funcional.
+
+Tareas:
+
+- Definir estados oficiales como Enum
+- Documentar principios del core en comentarios
+- NO modificar generación
+- NO tocar UI
+
+Prohibido:
+
+- Lógica de ejecución
+- Persistencia
+- Batch
+
+🧠 FA-010 — GlobalStateMachine
+
+Commit ID: FA-010
+Commit msg:
+feat(core): add GlobalStateMachine
+
+Prompt Claude
+Implementa GlobalStateMachine para FooocArte.
+
+Requisitos:
+
+- Estados: IDLE, PREPARING, RUNNING, PAUSED, CANCELLING, COMPLETED, ERROR
+- Validación estricta de transiciones
+- Estado serializable
+- Sin lógica de UI
+- Sin lógica de inferencia
+
+Prohibido:
+
+- Threads
+- Loops
+- Persistencia
+
+🔁 FA-020 — Estado integrado al Generate
+
+Commit ID: FA-020
+Commit msg:
+feat(core): integrate global state into generation lifecycle
+
+Prompt
+Integra GlobalStateMachine al flujo actual de generación.
+
+Requisitos:
+
+- Generate consulta estado antes de ejecutar
+- Cambios de estado explícitos
+- Sin romper flujo existente
+
+Prohibido:
+
+- Loops
+- Batch
+
+🔄 FA-030 — Loop Secuencial Interno
+
+Commit ID: FA-030
+Commit msg:
+feat(core): add internal sequential generation loop
+
+Prompt
+Refactoriza el flujo interno para soportar un loop secuencial.
+
+Requisitos:
+
+- generate_once()
+- Un solo render activo
+- Sin paralelismo
+
+Prohibido:
+
+- Batch
+- Async GPU
+
+📦 FA-040 — Batch Mode Nativo
+
+Commit ID: FA-040
+Commit msg:
+feat(core): add native batch execution mode
+
+Prompt
+Implementa Batch como modo nativo en FooocArte.
+
+Requisitos:
+
+- SINGLE | BATCH
+- Contador de imágenes válidas
+- tick() tras cada imagen aprobada
+
+Prohibido:
+
+- Botones nuevos
+- Pipelines duplicados
+
+💾 FA-050 — Persistencia de Estado
+
+Commit ID: FA-050
+Commit msg:
+feat(core): add persistent state storage
+
+Prompt
+Implementa persistencia nativa del estado.
+
+Requisitos:
+
+- state.json
+- config.json
+- Escritura incremental
+
+Prohibido:
+
+- Guardar tensores
+- Bloquear generación
+
+🔄 FA-060 — Recovery Automático
+
+Commit ID: FA-060
+Commit msg:
+feat(core): add crash recovery support
+
+Prompt
+Implementa recuperación tras interrupción.
+
+Requisitos:
+
+- Detectar estado previo
+- Reanudar sin repetir imágenes
+
+🧠 FA-070 — CLIP Quality Filter
+
+Commit ID: FA-070
+Commit msg:
+feat(quality): add CLIP post-generation filter
+
+Prompt
+Implementa filtro CLIP post-generación.
+
+Requisitos:
+
+- Evaluar imagen generada
+- Umbral configurable
+- Approved / rejected
+
+Prohibido:
+
+- Modificar prompt
+- Re-generar automáticamente
+
+🎛️ FA-080 — UI Reactiva al Estado
+
+Commit ID: FA-080
+Commit msg:
+feat(ui): bind controls to global state
+
+Prompt
+Conecta la UI al estado global.
+
+Requisitos:
+
+- UI refleja estado
+- Controles habilitados por estado
+
+Prohibido:
+
+- Lógica crítica en frontend
+
+📊 FA-090 — Logging y Auditoría
+
+Commit ID: FA-090
+Commit msg:
+feat(core): add audit logging
+
+Prompt
+Implementa logging técnico por generación.
+
+Requisitos:
+
+- log.txt
+- Timestamp
+- Prompt
+- Resultado
+- Errores
