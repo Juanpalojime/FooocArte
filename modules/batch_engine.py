@@ -137,7 +137,7 @@ class BatchEngine:
     # Ejecución principal
     # -------------------------
 
-    def run(self):
+    def run(self, task=None):
         self.log(f"[Batch] Starting batch {self.state.batch_id}")
         self.log(f"[Batch] Total images: {self.config.batch_size}")
         
@@ -151,7 +151,7 @@ class BatchEngine:
             
         # --- Folder Mode Branch ---
         if self.config.input_folder and os.path.exists(self.config.input_folder):
-             self._run_folder_mode()
+             self._run_folder_mode(task=task)
              return
         # --------------------------
 
@@ -173,6 +173,13 @@ class BatchEngine:
         # ---------------------
 
         for i in range(self.config.batch_size):
+            # --- Cancellation Check ---
+            if task and task.last_stop in ['stop', 'skip']:
+                 self.log("[Batch] Process cancelled by user.")
+                 self.emit("Batch cancelled.")
+                 break
+            # --------------------------
+
             self.state.current_index = i + 1
             self.emit(f"Generating image {self.state.current_index}/{self.state.total}")
             
@@ -284,10 +291,14 @@ class BatchEngine:
 
         self._final_report()
             
-    def _run_folder_mode(self):
+    def _run_folder_mode(self, task=None):
         import glob
         import cv2
         import numpy as np
+        
+        # Store task for inner loop check if passed
+        if task:
+            self.task = task
         
         # Supported extensions
         exts = ['*.png', '*.jpg', '*.jpeg', '*.webp', '*.bmp']
@@ -309,6 +320,12 @@ class BatchEngine:
         indices = self.ui_state.get("indices", {})
         
         for f_idx, file_path in enumerate(files):
+             # --- Cancellation Check ---
+            if hasattr(self, 'task') and self.task and self.task.last_stop in ['stop', 'skip']:
+                 self.log("[Batch] Process cancelled by user.")
+                 break
+            # --------------------------
+            
             self.log(f"[Batch] Processing folder file {f_idx+1}/{total_images}: {os.path.basename(file_path)}")
             
             # Load Image (Fooocus expects numpy arrays usually for gr.Image type inputs in pipeline?)

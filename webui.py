@@ -68,7 +68,8 @@ def generate_clicked(task: worker.AsyncTask):
         yield gr.update(visible=True, value=modules.html.make_progress_html(1, 'Initializing Batch...')), \
             gr.update(visible=True, value=None), \
             gr.update(visible=False, value=None), \
-            gr.update(visible=False)
+            gr.update(visible=False), \
+            True # Lock UI
 
         # Build UI State Dict (Simplified Mapping needed)
         # Note: This is tricky without exact mapping. 
@@ -92,13 +93,24 @@ def generate_clicked(task: worker.AsyncTask):
         # Taking a risk: I will assume standard Fooocus args order for valid defaults. 
         # But actually, I'll allow the UI to show the controls and Log the execution.
         
-        print(f"[Batch] Mode Enabled. Count: {batch_count}, Preset: {batch_preset}")
-        
-        # Run Batch Logic Wrapper
-        q = queue.Queue()
-        
-        def event_callback(**kwargs):
-            q.put(kwargs)
+        if batch_mode:
+            global BATCH_RUNNING_LOCK
+            if 'BATCH_RUNNING_LOCK' not in globals():
+                 BATCH_RUNNING_LOCK = threading.Lock()
+            
+            if not BATCH_RUNNING_LOCK.acquire(blocking=False):
+                 yield gr.update(value="⚠️ Batch already running! Please wait."), *[gr.update()] * (len(task.args) - 1)
+                 return
+
+            try:
+                print(f"[Batch] Mode Enabled. Count: {batch_count}, Preset: {batch_preset}")
+                
+                # Run Batch Logic Wrapper
+                q = queue.Queue()
+                
+                def event_callback(**kwargs):
+                    q.put(kwargs)
+
             
         def default_save_image(image, metadata):
              # Basic local save to 'outputs/YYYY-MM-DD'
@@ -185,7 +197,7 @@ def generate_clicked(task: worker.AsyncTask):
              # But the Controls will be verified.
              
              try:
-                 engine.run()
+                 engine.run(task=task)
              except Exception as e:
                  print(f"Batch Run Error: {e}")
                  import traceback
@@ -217,7 +229,8 @@ def generate_clicked(task: worker.AsyncTask):
         yield gr.update(visible=False), \
             gr.update(visible=False), \
             gr.update(visible=False), \
-            gr.update(visible=True, value=[]) # No gallery return yet for batch summary
+            gr.update(visible=True, value=[]), \
+            False # Unlock UI
             
         return
     # -----------------------------
@@ -225,7 +238,15 @@ def generate_clicked(task: worker.AsyncTask):
     yield gr.update(visible=True, value=modules.html.make_progress_html(1, 'Waiting for task to start ...')), \
         gr.update(visible=True, value=None), \
         gr.update(visible=False, value=None), \
-        gr.update(visible=False)
+        gr.update(visible=False), \
+        False # Normal mode, no extra lock needed (Fooocus handles its own locks usually?)
+        # Wait, if we want to lock controls during normal generation too?
+        # Standard Fooocus locks Generate button but often not tabs.
+        # User requested Selective Locking for Batch.
+        # But for consistency, we pass False or manage it?
+        # Standard Fooocus `generate_clicked` doesn't output `batch_lock_state` unless we change signature everywhere.
+        # Yes, we ARE changing signature everywhere.
+        # So we must yield False here.
 
     worker.async_tasks.append(task)
 
@@ -245,12 +266,14 @@ def generate_clicked(task: worker.AsyncTask):
                 yield gr.update(visible=True, value=modules.html.make_progress_html(percentage, title)), \
                     gr.update(visible=True, value=image) if image is not None else gr.update(), \
                     gr.update(), \
-                    gr.update(visible=False)
+                    gr.update(visible=False), \
+                    False
             if flag == 'results':
                 yield gr.update(visible=True), \
                     gr.update(visible=True), \
                     gr.update(visible=True, value=product), \
-                    gr.update(visible=False)
+                    gr.update(visible=False), \
+                    False
             if flag == 'finish':
                 if not args_manager.args.disable_enhance_output_sorting:
                     product = sort_enhance_images(product, task)
@@ -258,7 +281,8 @@ def generate_clicked(task: worker.AsyncTask):
                 yield gr.update(visible=False), \
                     gr.update(visible=False), \
                     gr.update(visible=False), \
-                    gr.update(visible=True, value=product)
+                    gr.update(visible=True, value=product), \
+                    False
                 finished = True
 
                 # delete Fooocus temp images, only keep gradio temp images
@@ -333,6 +357,7 @@ shared.gradio_root = gr.Blocks(title=title).queue()
 
 with shared.gradio_root:
     currentTask = gr.State(worker.AsyncTask(args=[]))
+    batch_lock_state = gr.State(False) # True = Locked
     inpaint_engine_state = gr.State('empty')
     with gr.Row():
         with gr.Column(scale=2):
@@ -1294,13 +1319,28 @@ with shared.gradio_root:
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
 
-        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True),
-                              outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating]) \
+        # Define Critical Components for Batch Locking
+        critical_components = [
+             base_model, refiner_model, refiner_switch, 
+             sampler_name, scheduler_name, 
+             aspect_ratios_selection, performance_selection,
+             image_number, seed_random, image_seed, negative_prompt
+        ] + lora_ctrls
+        
+        def toggle_batch_locks(locked):
+            return [gr.update(interactive=not locked)] * len(critical_components)
+            
+        batch_lock_state.change(toggle_batch_locks, inputs=batch_lock_state, outputs=critical_components, queue=False)
+
+        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True, False), # Add False for batch_lock_state initially? Or wait for generator?
+                               # Actually the first lambda runs BEFORE generator. 
+                               # If we set batch_lock_state=False initially, it's fine.
+                               outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating, batch_lock_state]) \
             .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
             .then(fn=get_task, inputs=ctrls, outputs=currentTask) \
-            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery]) \
-            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False),
-                  outputs=[generate_button, stop_button, skip_button, state_is_generating]) \
+            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery, batch_lock_state]) \
+            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False, False),
+                  outputs=[generate_button, stop_button, skip_button, state_is_generating, batch_lock_state]) \
             .then(fn=update_history_link, outputs=history_link) \
             .then(fn=lambda: None, _js='playNotification').then(fn=lambda: None, _js='refresh_grid_delayed')
 
